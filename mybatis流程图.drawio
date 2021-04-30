@@ -1,0 +1,22 @@
+<mxfile>
+    <diagram id="z4ea6JTPt-Vu6G4jc7sS" name="Page-1">
+        <mxGraphModel dx="1374" dy="790" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="2" value="配置文件&lt;br style=&quot;font-size: 12px;&quot;&gt;主配置文件：mybatisConfig.xml&lt;br style=&quot;font-size: 12px;&quot;&gt;mapper配置文件" style="rounded=0;whiteSpace=wrap;html=1;fontSize=12;" vertex="1" parent="1">
+                    <mxGeometry x="10" y="40" width="230" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="9" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="370" y="40" width="590" height="380" as="geometry"/>
+                </mxCell>
+                <mxCell id="11" value="SqlSessionFactoryBuilder：通过build()解析配置文件，得到Configuration对象，创建SqlSessionFactory" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;" vertex="1" parent="1">
+                    <mxGeometry x="355" y="50" width="600" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="12" value="" style="rounded=0;whiteSpace=wrap;html=1;fontSize=12;" vertex="1" parent="1">
+                    <mxGeometry x="380" y="110" width="480" height="160" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
