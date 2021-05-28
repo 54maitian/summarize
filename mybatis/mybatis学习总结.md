@@ -212,7 +212,7 @@ public static void main(String[] args) throws Exception {
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <!-- namespace：此mapper命名空间，一般对应mapper接口全限定类名 -->
-<!-- namespace + sqlId：mappedStatement全局唯一的statementId -->
+<!-- namespace + '.' + sqlId：mappedStatement全局唯一的statementId -->
 <mapper namespace="">
 <!--开启二级缓存；type：可以使用第三方缓存实现来存储二级缓存数据，实现org.apache.ibatis.cache.Cache接口-->
     <cache type=""/>
@@ -328,54 +328,657 @@ public static void main(String[] args) throws Exception {
   | select    | 另外一个映射语句的 ID,可以加载这个属性映射需要的复杂类型。 获取的 在列属性中指定的列的值将被传递给目标 select 语句作为参数。 表格后面 有一个详细的示例。 select 注 意 : 要 处 理 复 合 主 键 , 你 可 以 指 定 多 个 列 名 通 过 column= ” {prop1=col1,prop2=col2} ” 这种语法来传递给嵌套查询语 句。 这会引起 prop1 和 prop2 以参数对象形式来设置给目标嵌套查询语句。 |
   | fetchType | 可选的。有效值为 lazy和eager。 如果使用了，它将取代全局配置参数lazyLoadingEnabled。 |
 
-### 源码分析
+### Mapper接口
+
+```java
+
+```
+
+## Mybatis源码分析
+
+### 配置解析
 
 #### 涉及类库
 
-- Resources
-  - org.apache.ibatis.io.Resources
-  - 通过类加载其加载主配置文件为输入流
-- SqlSessionFactoryBuilder
-  - org.apache.ibatis.session.SqlSessionFactoryBuilder
-  - 接收文件输入流，借助XMLConfigBuilder解析后返回的Configuration，创建对应的SqlSessionFactory
-- XMLConfigBuilder
-  - org.apache.ibatis.builder.xml.XMLConfigBuilder
-  - 分析XPathParser解析主配置文件的XNode对象，创建Configuration返回
-- XMLMapperBuilder
-  - org.apache.ibatis.builder.xml.XMLMapperBuilder
-  - 分析XPathParser解析mapper配置文件的XNode对象，创建MappedStatement保存到Configuration中
-- MapperBuilderAssistant
-  - org.apache.ibatis.builder.MapperBuilderAssistant
+##### Resources
 
-##### 
+- 通过类加载其加载主配置文件为输入流
 
+```java
+//org.apache.ibatis.io.Resources
+public class Resources {
+    //返回类路径上的资源为stream流
+    public static InputStream getResourceAsStream(String resource) throws IOException {}
+}
+```
 
+##### SqlSessionFactoryBuilder
 
-##### 
+- 接收主配置文件流，创建XMLConfigBuilder并调用其parse方法解析主配置文件
+- 借助XMLConfigBuilder解析后的Configuration，创建SqlSessionFactory
+  - 实现：org.apache.ibatis.session.defaults.DefaultSqlSessionFactory
+- 全局唯一
 
+```java
+//org.apache.ibatis.session.SqlSessionFactoryBuilder
+public class SqlSessionFactoryBuilder {
+    public SqlSessionFactory build(InputStream inputStream, String environment, Properties properties) {
+        //创建XMLConfigBuilder，调用parse解析inputStream内容，返回Configuration对象
+        XMLConfigBuilder parser = new XMLConfigBuilder(inputStream, environment, properties);
+        return build(parser.parse());
+    }
 
+    /* 创建SqlSessionFactory，类型为DefaultSqlSessionFactory */
+    public SqlSessionFactory build(Configuration config) {
+        return new DefaultSqlSessionFactory(config);
+    }
+}
+```
 
+##### XMLConfigBuilder
 
+- 构造创建Configuration对象
+- 解析主配置文件信息，将其中内容提取、保存到Configuration中
+- 根据mappers配置不同，通过不同的方式调用解析对应mapper资源
+- 全局唯一
 
-##### 
+```java
+//org.apache.ibatis.builder.xml.XMLConfigBuilder
+public class XMLConfigBuilder extends BaseBuilder {
+    //configuration对象，构造时创建
+    protected final Configuration configuration = new Configuration();
 
+    /* 解析主配置文件信息 */
+    private void parseConfiguration(XNode root) {
+        //解析mappers元素
+        mapperElement(root.evalNode("mappers"));
+    }
+    /* 解析mappers元素对应资源入口 */
+    private void mapperElement(XNode parent) throws Exception {
+        //方式一：通过XMLMapperBuilder解析对应mapper.xml配置文件
+        XMLMapperBuilder mapperParser = new XMLMapperBuilder(...);
+        mapperParser.parse();
+        //方式二：通过configuration对象，解析对应mapper接口
+        configuration.addMapper(mapperInterface);
+    }
+}
+```
 
+##### Configuration
 
+- 主配置对象，对应主配置文件配置信息
+- 全局唯一，存储一些全局控制的对象/容器
+- 通过Configuration进行一些特殊行为操作
 
+```java
+//org.apache.ibatis.session.Configuration
+public class Configuration {
+    //二级缓存全局控制参数
+    protected boolean cacheEnabled = true;
+    //mapper注册对象
+    protected final MapperRegistry mapperRegistry = new MapperRegistry(this);
+    //二级缓存容器，key为namespace
+    protected final Map<String, Cache> caches = new StrictMap<>("Caches collection");
+    //已加载的资源(mapper类、mapper.xml)
+    protected final Set<String> loadedResources = new HashSet<>();
+    //MappedStatement存储容器，key为statementId = namespace + '.' + sqlId
+    protected final Map<String, MappedStatement> mappedStatements = new StrictMap<MappedStatement>();
 
-##### 
+    /* 判断一个资源是否已加载，避免重复加载 */
+    public boolean isResourceLoaded(String resource) {
+        return loadedResources.contains(resource);
+    }
+    /* 创建Executor对象 */
+    public Executor newExecutor(Transaction transaction, ExecutorType executorType) {
+        //常用类型
+        executor = new SimpleExecutor(this, transaction);
+        //根据二级缓存参数，将Executor包装为CachingExecutor
+        if (cacheEnabled) {
+            executor = new CachingExecutor(executor);
+        }
+        //如果有插件，则使用插件进行包装增强
+        executor = (Executor) interceptorChain.pluginAll(executor);
+    }
+    /* 借助mapperRegistry注册mapper */
+    public <T> void addMapper(Class<T> type) {
+        mapperRegistry.addMapper(type);
+    }
+	
+    /* 传入sqlSession，借助mapperRegistry根据Class获取mapper接口的代理对象 */
+    public <T> T getMapper(Class<T> type, SqlSession sqlSession) {
+        return mapperRegistry.getMapper(type, sqlSession);
+    }
+}
+```
 
+##### XMLMapperBuilder
 
+- 对应每个mapper.xml配置文件资源
 
+- 分析XPathParser解析mapper配置文件的XNode对象
+  - 解析操作语句(select|insert|update|delete)，创建对应MappedStatement保存到Configuration中
+  - 解析cache元素，借助builderAssistant创建二级缓存容器
 
+```java
+//org.apache.ibatis.builder.xml.XMLMapperBuilder
+public class XMLMapperBuilder extends BaseBuilder {
+    protected final Configuration configuration;
+    //一个解析助手
+    private final MapperBuilderAssistant builderAssistant = new MapperBuilderAssistant(configuration, resource);
 
-##### 
+    /* 解析mapper文件入口 */
+    public void parse() {
+        //解析mapper文件
+        configurationElement(parser.evalNode("/mapper"));
+        //注册对应mapper接口
+        bindMapperForNamespace();
+    }
 
+    /* 解析mapper.xml配置文件 */
+    private void configurationElement(XNode context) {
+        //获取namespace
+        String namespace = context.getStringAttribute("namespace");
+        //设置namespace
+        builderAssistant.setCurrentNamespace(namespace);
+        //解析cache标签，进行二级缓存处理
+        cacheElement(context.evalNode("cache"));
+        //解析每个操作语句
+        buildStatementFromContext(context.evalNodes("select|insert|update|delete"));
+    }
+	
+    /* 解析操作语句节点 */
+    private void buildStatementFromContext(List<XNode> list, String requiredDatabaseId) {
+        for (XNode context : list) {
+            //创建XMLStatementBuilder，解析XNode节点创建对应的MappedStatement保存到Configuration中
+            final XMLStatementBuilder statementParser = new XMLStatementBuilder(...);
+            statementParser.parseStatementNode();
+        }
+    }
+}
+```
 
+##### MapperBuilderAssistant
 
+- 对应于每个mapper资源解析对象
+  - XMLMapperBuilder
+  - MapperAnnotationBuilder
 
+- mapper配置解析助手
+  - MappedStatement的创建和保存
+  - 二级缓存的容器创建
+    - 对应于每个namespace
+    - 通过currentCache临时对象，将容器保存到Configuration和MappedStatement中
 
+```java
+public class MapperBuilderAssistant extends BaseBuilder {
+    protected final Configuration configuration;
+    //命名空间，对应于xml中namespace/mapper接口全限定类名
+    private String currentNamespace;
+    //二级缓存对象临时引用，用于添加到Configuration和MappedStatement中
+    private Cache currentCache;
+    
+    //二级缓存容器创建
+    public Cache useNewCache(...){
+        //创建二级缓存容器Cache
+        Cache cache = new CacheBuilder(currentNamespace).build();
+        //保存到configuration中
+        configuration.addCache(cache);
+        //保存引用，用于后续将二级缓存容器保存到MappedStatement中
+        currentCache = cache;
+    }
+    
+    //创建MappedStatement
+    public MappedStatement addMappedStatement(...){
+        //创建MappedStatement，并将二级缓存currentCache注入
+        MappedStatement.Builder statementBuilder = new MappedStatement().cache(currentCache).Builder.build();
+        //将MappedStatement添加到configuration中
+        configuration.addMappedStatement(statement);
+    }
+}
+```
 
+##### XMLStatementBuilder
 
+- 对应于每个操作语句(select|insert|update|delete)
+- 解析每个操作语句元素内容
+  - 将信息传递给MapperBuilderAssistant创建MappedStatement并保存
 
+```java
+//org.apache.ibatis.builder.xml.XMLStatementBuilder
+public class XMLStatementBuilder extends BaseBuilder {
+    //mapper解析助手
+    private final MapperBuilderAssistant builderAssistant;
+    //对应select|insert|update|delete节点
+    private final XNode context;
+    
+    /* XNode元素解析 */
+    public void parseStatementNode() {
+        //分析XNode元素，将解析结果传递给builderAssistant创建MappedStatement
+        builderAssistant.addMappedStatement(...)
+    }
+}
+```
+
+##### MappedStatement
+
+- 对应于每个操作语句(select|insert|update|delete)
+- 操作语句解析的最终结果对象
+
+```java
+//org.apache.ibatis.mapping.MappedStatement
+public final class MappedStatement {
+    //唯一标志：namespace + '.' + sqlId
+    private String id;
+    //二级缓存容器
+    private Cache cache;
+    //保存sql信息
+    private SqlSource sqlSource;
+    //是否开启二级缓存全局配置
+    protected boolean cacheEnabled = true;
+}
+```
+
+##### MapperRegistry
+
+- 对应于每个mapperClass资源
+
+- mapper接口注册、解析入口
+
+```java
+//org.apache.ibatis.binding.MapperRegistry
+public class MapperRegistry {
+    //配置主体
+    private final Configuration config;
+    //mapper注册容器map，key为mapperClass，value为mapperClass对应的MapperProxyFactory
+    private final Map<Class<?>, MapperProxyFactory<?>> knownMappers = new HashMap<>();
+    
+    //注册mapperClass接口
+    public <T> void addMapper(Class<T> type) {
+        //注册到容器中
+        knownMappers.put(type, new MapperProxyFactory<>(type));
+        //借助MapperAnnotationBuilder对象解析对应mapper接口
+        MapperAnnotationBuilder parser = new MapperAnnotationBuilder(config, type);
+        parser.parse();
+    }
+    
+    /* 接收sqlSession，获取mapper接口对应代理对象 */
+    public <T> T getMapper(Class<T> type, SqlSession sqlSession) {
+        //获取注册的mapper代理工厂
+        final MapperProxyFactory<T> mapperProxyFactory = (MapperProxyFactory<T>) knownMappers.get(type);
+        //返回代理工厂创建的代理对象
+        return mapperProxyFactory.newInstance(sqlSession);
+    }
+}
+```
+
+##### MapperAnnotationBuilder
+
+- 对应于每个mapperClass资源
+- 解析具体mapper接口，分析接口中的注释
+  - 解析接口中对应mybatis注释，进行二级缓存的容器创建
+  - 解析其中方法上注释，创建对应MappedStatement并保存
+
+```java
+//org.apache.ibatis.builder.annotation.MapperAnnotationBuilder
+public class MapperAnnotationBuilder {
+    //需要分析的注释类型集合
+    //Select、Update、Insert、Delete、SelectProvider、UpdateProvider、InsertProvider、DeleteProvider
+    private static final Set<Class<? extends Annotation>> statementAnnotationTypes;
+    //
+    private final Configuration configuration;
+    private final MapperBuilderAssistant assistant;
+    //对应接口类型
+    private final Class<?> type;
+	
+    /* 解析方法 */
+    public void parse() {
+        //尝试加载对应xml资源
+        loadXmlResource();
+        //根据注释处理二级缓存容器
+        parseCache();
+        //解析具体方法
+        for (Method method : type.getMethods()) {
+            parseStatement(method);
+        }
+    }
+}
+```
+
+#### 解析分析
+
+参照JDBC原生操作，我们可以知道，进行数据库操作，主要是两点
+
+- 获取数据库连接
+  - 数据库连接信息
+- 获取sql信息
+  - sql主体
+  - sql参数
+  - sql结果解析
+
+对应到我们上述mybatis配置
+
+- 主配置文件
+  - 数据库连接信息
+  - 一些作为操作框架的高级行为控制信息
+  - 体现为Configuration
+- mapper资源
+  - 体现为MappedStatement
+- mapper.xml配置文件
+  - sql信息
+  - 二级缓存控制元素Cache
+- mapper接口
+  - 提供mapper代理对象的实现类
+  - 通过注解替代mapper.xml配置文件
+
+#### 解析过程
+
+##### 入口
+
+```bash
+# 1. Resources加载主配置文件为文件流
+	# InputStream - org.apache.ibatis.io.Resources#getResourceAsStream
+	
+# 2. 新建SqlSessionFactoryBuilder，调用其build方法获取sqlSessionFactory
+	# SqlSessionFactory - org.apache.ibatis.session.SqlSessionFactoryBuilder#build
+		# 创建XMLConfigBuilder，借用其解析文件流，获得Configuration
+		# 创建DefaultSqlSessionFactory返回	
+```
+
+##### 主配置解析
+
+```bash
+# 解析主配置文件，返回对应Configuration对象
+# XMLConfigBuilder
+	# 构造创建Configuration
+	# XPathParser解析InputStream为XNode
+	# 解析主配置文件configuration标签内容
+		# org.apache.ibatis.builder.xml.XMLConfigBuilder#parseConfiguration
+			# 解析配置对应mapper资源入口
+				# org.apache.ibatis.builder.xml.XMLConfigBuilder#mapperElement
+```
+
+##### Mapper资源解析
+
+解析mapper资源，用于创建MappedStatement对象
+
+mapper资源解析根据mappers配置资源不同，有两种解析方式
+
+###### mapper.xml
+
+```bash
+# 加载mapper.xml资源
+	# 对应配置
+		# mapper标签
+			# resource/url
+
+# 主类：XMLMapperBuilder
+	# org.apache.ibatis.builder.xml.XMLMapperBuilder#parse
+		# 1.判断此资源是否已经加载，已经加载过则跳过
+			# org.apache.ibatis.session.Configuration#isResourceLoaded
+		# 2.借助XPathParser解析文件流
+		# 3.解析mapper元素
+			# org.apache.ibatis.builder.xml.XMLMapperBuilder#configurationElement
+		# 4.尝试加载对应mapperClass资源
+			# org.apache.ibatis.builder.xml.XMLMapperBuilder#bindMapperForNamespace
+
+# mapper文件对应重点元素
+	# cache
+		# 控制二级缓存容器创建
+		# 解析入口
+			# org.apache.ibatis.builder.xml.XMLMapperBuilder#cacheElement
+	# select|insert|update|delete
+		# 对应MappedStatement
+		# 解析入口
+			# org.apache.ibatis.builder.xml.XMLMapperBuilder#buildStatementFromContext
+				# 借助XMLStatementBuilder解析对应节点
+
+# XMLStatementBuilder解析节点
+	# org.apache.ibatis.builder.xml.XMLStatementBuilder#parseStatementNode
+	# 解析节点对应信息
+	# 借助MapperBuilderAssistant创建MappedStatement，并保存到Configuration中
+```
+
+###### mapperClass
+
+```bash
+# 加载mapperClass资源
+	# 对应配置
+		# mapper标签
+			# class
+		# package标签
+
+# 借助Configuration添加mapper
+	# org.apache.ibatis.session.Configuration#addMapper
+	
+# 实质是调用MapperRegistry添加mapper
+	# org.apache.ibatis.binding.MapperRegistry#addMapper
+	# 1.创建mapperClass对应MapperProxyFactory，并注册到MapperRegistry中
+		# knownMappers.put(type, new MapperProxyFactory<>(type));
+	# 2.创建MapperAnnotationBuilder解析mapper接口
+	
+# MapperAnnotationBuilder解析mapper接口
+	# org.apache.ibatis.builder.annotation.MapperAnnotationBuilder#parse
+	# 1.判断此资源是否已经加载，已经加载过则跳过
+		# org.apache.ibatis.session.Configuration#isResourceLoaded
+	# 2.尝试加载mapper接口对应的mapper.xml资源
+		# org.apache.ibatis.builder.annotation.MapperAnnotationBuilder#loadXmlResource
+	# 3.查找@CacheNamespace注解，进行二级缓存容器创建
+		# org.apache.ibatis.builder.annotation.MapperAnnotationBuilder#parseCache
+	# 4.解析mapper接口的method，如果有配置对应注解，则解析注解并创建MappedStatement
+		# org.apache.ibatis.builder.annotation.MapperAnnotationBuilder#parseStatement
+```
+
+##### 总结
+
+```bash
+# 解析配置主要是为了获得两个对象
+	# Configuration
+		# 数据库连接信息
+		# Mybatis行为控制信息
+	# MappedStatement
+		# SQL信息
+		# 参数信息
+		# 结果集信息
+# 不论mapper资源是Class/xml，我们发现其解析时都会尝试加载其对应资源
+	# Configuration的loadedResources容器存储已经解析的资源名称可以避免循环解析
+	# 资源互相进行加载时，需要保证两点
+		# mapper接口文件与resource的xml文件保持相同层级
+		# mapper接口文件与resource的xml文件保持相同名称
+```
+
+### 数据库操作
+
+上述配置加载解析，其目的是为后续进行数据库操作提供必要信息
+
+- 数据库连接信息
+- SQL信息(操作数据库的详细信息)
+
+#### 设计类库
+
+##### SqlSessionFactory
+
+- SqlSession工厂，是提供创建SqlSession方法的顶级接口
+- org.apache.ibatis.session.SqlSessionFactory
+
+##### DefaultSqlSessionFactory
+
+- SqlSessionFactory接口的实现类
+- 提供获取SqlSession的具体实现
+
+```java
+//org.apache.ibatis.session.defaults.DefaultSqlSessionFactory
+public class DefaultSqlSessionFactory implements SqlSessionFactory {
+    /* 创建sqlSession */
+    public SqlSession openSession() {
+        return openSessionFromDataSource(configuration.getDefaultExecutorType(), null, false);
+    }
+
+    /* 创建sqlSession具体工作 */
+    private SqlSession openSessionFromDataSource(ExecutorType execType, TransactionIsolationLevel level, boolean autoCommit) {
+        //创建executor对象
+        final Executor executor = configuration.newExecutor(tx, execType);
+        //返回DefaultSqlSession对象
+        return new DefaultSqlSession(configuration, executor, autoCommit);
+    }
+}
+```
+
+##### SqlSession
+
+- Mybatis操作的主要接口
+- org.apache.ibatis.session.SqlSession
+- 提供mybatis操作功能
+  - 执行statementId对应sql
+  - 获取mapper代理对象
+  - 事务管理
+
+##### DefaultSqlSession
+
+- Mybatis原生操作时，SqlSession接口具体实现
+
+```java
+public class DefaultSqlSession implements SqlSession {
+    private final Configuration configuration;
+    //执行器
+    private final Executor executor;
+
+    /* 操作方法示例 */
+    public <E> List<E> selectList(String statement, Object parameter, RowBounds rowBounds) {
+        //根据statementId从Configuration中获取对应MappedStatement
+        MappedStatement ms = configuration.getMappedStatement(statement);
+        //传入MappedStatement，调用executor对应方法
+        return executor.query(ms, wrapCollection(parameter), rowBounds, Executor.NO_RESULT_HANDLER);
+    }
+	
+    /* 借助configuration获取mapper代理对象 */
+    public <T> T getMapper(Class<T> type) {
+        return configuration.getMapper(type, this);
+    }
+}
+```
+
+##### Executor
+
+- JDBC操作执行器顶级接口
+- org.apache.ibatis.executor.Executor
+- 提供操作方法
+  - update
+    - 对应insert|update|delete操作
+  - query
+    - select操作
+
+##### BaseExecutor
+
+- Executor接口抽象实现类
+- JDBC操作入口
+- 提供前置功能
+  - 一级缓存控制
+  - 事务控制
+
+```java
+public abstract class BaseExecutor implements Executor {
+    //事务对象
+    protected Transaction transaction;
+    //一级缓存容器
+    protected PerpetualCache localCache;
+
+    /* 查询方法 */
+    public <E> List<E> query(...) throws SQLException {
+        List<E> list;
+        try {
+            //尝试从一级缓存中获取查询结果
+            list = resultHandler == null ? (List<E>) localCache.getObject(key) : null;
+            if (list != null) {
+                handleLocallyCachedOutputParameters(ms, key, parameter, boundSql);
+            } else {
+                //获取不到，执行查询
+                list = queryFromDatabase(ms, parameter, rowBounds, resultHandler, key, boundSql);
+            }
+            return list;
+        }
+    }
+
+    /* 一级缓存不命中，执行数据库查询*/
+    private <E> List<E> queryFromDatabase(...) throws SQLException {
+        //执行查询
+        List<E> list; = doQuery(ms, parameter, rowBounds, resultHandler, boundSql);
+        //缓存结果到一级缓存
+        localCache.putObject(key, list);
+        return list;
+    }
+}
+```
+
+##### SimpleExecutor
+
+- Executor接口实现类
+- 进行数据库操作的对象
+
+```java
+//org.apache.ibatis.executor.SimpleExecutor
+public class SimpleExecutor extends BaseExecutor {
+	
+    /* 操作方法示例 */
+    public <E> List<E> doQuery(...) throws SQLException {
+        Statement stmt = null;
+        try {
+            //获取Configuration对象
+            Configuration configuration = ms.getConfiguration();
+            //创建StatementHandler
+            StatementHandler handler = configuration.newStatementHandler(...);
+            //获取Statement对象(包括获取连接、参数处理设置)
+            stmt = prepareStatement(handler, ms.getStatementLog());
+            //执行JDBC操作(包括JDBC执行、结果集处理)
+            return handler.query(stmt, resultHandler);
+        } finally {
+            //关闭连接
+            closeStatement(stmt);
+        }
+    }
+    
+    prepareStatement
+}
+```
+
+##### StatementHandler
+
+- 真正执行JDBC操作的执行者的顶级接口
+- 提供功能方法
+  - 获取Statement
+  - 借助ParameterHandler进行参数预处理
+  - 借助ResultSetHandler进行结果集解析封装
+
+##### BaseStatementHandler
+
+- StatementHandler抽象实现类
+
+```java
+//org.apache.ibatis.executor.statement.BaseStatementHandler
+public abstract class BaseStatementHandler implements StatementHandler {
+    protected final Configuration configuration;
+    //结果集处理器
+    protected final ResultSetHandler resultSetHandler;
+    //参数处理器
+    protected final ParameterHandler parameterHandler;
+    //SQL信息
+    protected BoundSql boundSql;
+
+    /* 借助parameterHandler进行参数设置 */
+    public void parameterize(Statement statement) throws SQLException {
+        parameterHandler.setParameters((PreparedStatement) statement);
+    }
+
+    /* 由Connection创建Statement对象 */
+    public Statement prepare(Connection connection, Integer transactionTimeout) throws SQLException {
+        statement = instantiateStatement(connection);
+    }
+	
+    /* 执行JDBC操作，再借助resultSetHandler进行结果集映射 */
+    public <E> List<E> query(Statement statement, ResultHandler resultHandler) throws SQLException {
+        String sql = boundSql.getSql();
+        statement.execute(sql);
+        return resultSetHandler.handleResultSets(statement);
+    }
+}
+```
 
