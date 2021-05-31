@@ -670,7 +670,7 @@ public class MapperAnnotationBuilder {
   - 提供mapper代理对象的实现类
   - 通过注解替代mapper.xml配置文件
 
-#### 解析过程
+#### 过程解析
 
 ##### 入口
 
@@ -979,6 +979,96 @@ public abstract class BaseStatementHandler implements StatementHandler {
         statement.execute(sql);
         return resultSetHandler.handleResultSets(statement);
     }
+}
+```
+
+#### 过程解析
+
+```bash
+# 获取SqlSession
+	# org.apache.ibatis.session.SqlSessionFactory#openSession
+	# org.apache.ibatis.session.defaults.DefaultSqlSessionFactory#openSession()
+	# 1. 获取Executor对象
+		# org.apache.ibatis.session.Configuration#newExecutor
+	# 2. 创建SqlSession返回
+		# org.apache.ibatis.session.defaults.DefaultSqlSession
+		
+# 执行数据库操作(以查询为例)
+	# 1. sqlSession根据statementId调用方法
+		# org.apache.ibatis.session.defaults.DefaultSqlSession#selectList
+	# 2. 根据statementId从Configuration中获取对应MappedStatement
+		# org.apache.ibatis.session.Configuration#getMappedStatement
+	# 3. 借助sqlSession中executor执行查询
+		# org.apache.ibatis.executor.Executor#query
+		# org.apache.ibatis.executor.BaseExecutor#query
+	# 4. 根据入参信息创建CacheKey作为缓存标志
+		# org.apache.ibatis.executor.BaseExecutor#createCacheKey
+	# 5. 根据CacheKey从一级缓存中获取结果，如果没有，则执行JDBC查询
+		# org.apache.ibatis.executor.SimpleExecutor#doQuery
+	# 6. 创建StatementHandler对象
+		# org.apache.ibatis.session.Configuration#newStatementHandler
+	# 7. 使用StatementHandler进行前置处理
+		# org.apache.ibatis.executor.SimpleExecutor#prepareStatement
+            # 7.1 获取数据库连接
+            # org.apache.ibatis.executor.BaseExecutor#getConnection
+            # 7.2 由连接创建预处理对象Statement
+            # org.apache.ibatis.executor.statement.StatementHandler#prepare
+            # 7.3 使用parameterHandler进行入参处理
+            # org.apache.ibatis.executor.statement.StatementHandler#parameterize
+	# 8. 执行查询
+		# org.apache.ibatis.executor.statement.CallableStatementHandler#query
+			# 8.1 执行查询
+				# java.sql.PreparedStatement#execute
+			# 8.2 获取结果集
+				# org.apache.ibatis.executor.resultset.ResultSetHandler#handleResultSets
+			# 8.3 借助resultSetHandler进行结果集处理
+				# org.apache.ibatis.executor.resultset.ResultSetHandler#handleOutputParameters	
+                
+# 注
+	# 此处对于parameterHandler、resultSetHandler的处理过程没有具体分析
+```
+
+## Mybatis重点
+
+### Mapper代理
+
+使用Mybatis进行数据库操作，原生使用是根据具体Statementid进行对应方法调用，这种使用有一下缺点：
+
+- 需要给定对应StatementId字符串，不方便
+- 需要知道方法的具体操作类型(select|insert|update|delete)，来调用其对应操作方法
+- 需要进行结果对象的强制类型转换
+
+```java
+//获取sqlSession
+SqlSession sqlSession = sqlSessionFactory.openSession();
+//查询列表时调用selectList
+List<Object> objects = sqlSession.selectList("mapper.TransferMapper.selectList");
+//查询单个元素时调用selectOne
+TransferAmount transferAmount = (TransferAmount)sqlSession.selectOne("mapper.TransferMapper.selectOne");
+//执行insert|update|delete操作时调用update
+sqlSession.update("mapper.TransferMapper.updateAmount");
+```
+
+此时Mybatis提供了一种代理来替代上述比较繁琐的操作，这就是Mapper代理
+
+#### 涉及类库
+
+#### MapperRegistry
+
+```bash
+# 前面讲述配置解析有对应描述
+```
+
+#### MapperProxyFactory
+
+- mapper代理工厂
+
+- 对应于每个mapperClass资源
+
+```java
+//org.apache.ibatis.binding.MapperProxyFactory
+public class MapperRegistry {
+    
 }
 ```
 
