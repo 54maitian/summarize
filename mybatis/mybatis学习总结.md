@@ -4,6 +4,17 @@
 
 JDBC是一套java语言访问数据库的规范API，我们可以使用其来访问不同数据库
 
+### 依赖
+
+```xml
+<!-- mysql数据库连接,其他数据库有其对应连接 -->
+<dependency>
+    <groupId>org.wisdom-framework</groupId>
+    <artifactId>mysql-connector-java</artifactId>
+    <version>5.1.34_1</version>
+</dependency>
+```
+
 ### 常用类和接口
 
 | 接口/类                    | 描述                                                    |
@@ -91,6 +102,23 @@ public static void main(String[] args) throws Exception {
 ## Mybatis
 
 MyBatis 是一款优秀的持久层框架，它支持自定义 SQL、存储过程以及高级映射
+
+### 依赖
+
+```xml
+<!-- mybatis依赖 -->
+<dependency>
+    <groupId>org.mybatis</groupId>
+    <artifactId>mybatis</artifactId>
+    <version>3.5.5</version>
+</dependency>
+<!-- mysql数据库连接,其他数据库有其对应连接 -->
+<dependency>
+    <groupId>org.wisdom-framework</groupId>
+    <artifactId>mysql-connector-java</artifactId>
+    <version>5.1.34_1</version>
+</dependency>
+```
 
 ### 分析
 
@@ -1051,24 +1079,1070 @@ sqlSession.update("mapper.TransferMapper.updateAmount");
 
 此时Mybatis提供了一种代理来替代上述比较繁琐的操作，这就是Mapper代理
 
+- 通过获取mapperClass的代理对象，进行方法调用
+- 使用mapperClass接口方法映射xml配置的MappedStatement，代理对象调用方法时根据映射信息，获取StatementId调用SqlSession的不同方法
+
 #### 涉及类库
 
-#### MapperRegistry
+##### MapperRegistry
 
 ```bash
 # 前面讲述配置解析有对应描述
+# mapper接口注册、解析入口
 ```
 
-#### MapperProxyFactory
+##### MapperProxyFactory
 
-- mapper代理工厂
+- mapper代理工厂，创建代理对象实例
 
 - 对应于每个mapperClass资源
 
 ```java
 //org.apache.ibatis.binding.MapperProxyFactory
 public class MapperRegistry {
+    //mapperClass
+    private final Class<T> mapperInterface;
+    
+    /* 接收sqlSession，创建MapperProxy */
+    public T newInstance(SqlSession sqlSession) {
+        final MapperProxy<T> mapperProxy = new MapperProxy<>(sqlSession, mapperInterface, methodCache);
+        return newInstance(mapperProxy);
+    }
+
+    /* 使用动态代理 创建 代理对象实例 */
+    protected T newInstance(MapperProxy<T> mapperProxy) {
+        return (T) Proxy.newProxyInstance(mapperInterface.getClassLoader(), new Class[] { mapperInterface }, mapperProxy);
+    }
+}
+```
+
+##### MapperProxy
+
+- InvocationHandler实现类
+- 通过invoke方法创建MapperMethodInvoker实现方法调用
+
+```java
+//org.apache.ibatis.binding.MapperProxy
+public class MapperProxy<T> implements InvocationHandler, Serializable {
+    //获取sqlSession
+    private final SqlSession sqlSession;
+    private final Class<T> mapperInterface;
+    //方法对应MapperMethodInvoker的缓存，可以避免相同方法调用时重复创建
+    private final Map<Method, MapperMethodInvoker> methodCache;
+    
+    /* 继承方法进行代理对象方法调用 */
+    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+        if (Object.class.equals(method.getDeclaringClass())) {
+            return method.invoke(this, args);
+        } else {
+            return cachedInvoker(method).invoke(proxy, method, args, sqlSession);
+        }
+    }
+    
+    /* 创建方法对应MapperMethodInvoker，并缓存 */
+    private MapperMethodInvoker cachedInvoker(Method method) throws Throwable {
+        if (m.isDefault()) {
+            return new DefaultMethodInvoker(getMethodHandleJava8(method));
+        }else {
+            return new PlainMethodInvoker(new MapperMethod(mapperInterface, method, sqlSession.getConfiguration()));
+        }
+    }
+	
+    /* MapperProxy内部接口 */
+    interface MapperMethodInvoker {
+        Object invoke(Object proxy, Method method, Object[] args, SqlSession sqlSession) throws Throwable;
+    }
+	
+    /* MapperProxy静态内部类，实现了MapperMethodInvoker接口 */
+    private static class PlainMethodInvoker implements MapperMethodInvoker {
+        //当前MapperMethod
+        private final MapperMethod mapperMethod;
+		
+        /* 借助MapperMethod代理实现方法调用 */
+        public Object invoke(Object proxy, Method method, Object[] args, SqlSession sqlSession) throws Throwable {
+            return mapperMethod.execute(sqlSession, args);
+        }
+    }
+}
+```
+
+##### MapperMethod
+
+- 方法代理，根据方法对应MappedStatement的类型调用SqlSession不同的方法
+
+```java
+//org.apache.ibatis.binding.MapperMethod
+public class MapperMethod {
+    //当前代理方法信息
+    private final MethodSignature method;
+    //根据当前代理方法从Configuration中获取的MappedStatement信息
+    private final SqlCommand command;
+
+    /* 根据sql类型判断进行不同方法调用 */
+    public Object execute(SqlSession sqlSession, Object[] args) {
+        switch (command.getType()) {
+            case INSERT: {
+                sqlSession.insert(command.getName(), param);
+                break;
+            },
+            case UPDATE: {
+                sqlSession.update(command.getName(), param);
+                break;
+            },
+            case DELETE: {
+                sqlSession.delete(command.getName(), param);
+                break;
+            },
+            case SELECT: {
+                sqlSession.selectOne(command.getName(), param);
+                break;
+            }
+        }
+    }
+}
+```
+
+#### 过程解析
+
+```bash
+# 代理注册
+	# 解析配置时，如果解析了mapperClass资源，则将其注册到Configuration中的MapperRegistry中
+		# org.apache.ibatis.binding.MapperRegistry#addMapper
+	# 实质是创建mapperClass对应MapperProxyFactory进行缓存
+	
+# 代理对象获取
+	# 1. 获取mapperClass对应MapperProxyFactory
+		# org.apache.ibatis.session.defaults.DefaultSqlSession#getMapper
+			# org.apache.ibatis.session.Configuration#getMapper
+				# org.apache.ibatis.binding.MapperRegistry#getMapper
+	# 2. MapperProxyFactory创建代理对象
+		# org.apache.ibatis.binding.MapperProxyFactory#newInstance
+		
+# 代理对象方法调用，实质是java动态代理的使用
+	# 1. 由于是使用InvocationHandler的实现类MapperProxy创建代理对象，所以执行代理方法会调用到MapperProxy中
+		# org.apache.ibatis.binding.MapperProxy#invoke
+	# 2. MapperProxy的invoke方法中创建对应MapperMethodInvoker进行方法调用
+		# 创建对应MapperMethodInvoker
+			# org.apache.ibatis.binding.MapperProxy#cachedInvoker
+		# 方法调用
+			# org.apache.ibatis.binding.MapperProxy.PlainMethodInvoker#invoke
+	# 3. MapperMethodInvoker借助MapperMethod进行方法调用
+    	# org.apache.ibatis.binding.MapperMethod#execute
+    	
+# MapperMethod
+	# 创建时接收Configuration、mapperInterface、method
+		# 1. 获取对应的StatementId
+		# 2. 获取对应MappedStatement的处理类型
+	# 执行代理方法
+		# 1. 根据方法类型判断
+		# 2. 通过前置处理方法入参为单一对象
+			# org.apache.ibatis.binding.MapperMethod.MethodSignature#convertArgsToSqlCommandParam
+		# 3. 调用SqlSession具体的方法
+		
+# 实质
+	# 通过动态代理创建代理对象
+	# 代理对象调用方法时
+		# 通过mybatis规则中mapperClass与mapper.xml资源映射关系，获取当前代理方法对应的SQL信息(MappedStatement中)
+		# 根据方法类型判断，使用传入的sqlSession进行具体方法调用
+```
+
+### 一级缓存
+
+```bash
+# 缓存用于提高查询效率
+# 一级缓存默认开启
+```
+
+#### 涉及类库
+
+##### BaseExecutor
+
+- Executor抽象父类
+
+- 一级缓存管理对象，持有一级缓存容器对象
+- 可以根据mappedStatement及参数信息创建CacheKey
+
+```java
+//org.apache.ibatis.executor.BaseExecutor
+public abstract class BaseExecutor implements Executor {
+    //一级缓存容器对象
+    protected PerpetualCache localCache = new PerpetualCache("LocalCache");
+
+    /* 查询操作时，进行一级缓存处理 */
+    public <E> List<E> query(...) {
+        //尝试从一级缓存中获取结果
+        list = resultHandler == null ? (List<E>) localCache.getObject(key) : null;
+        if (list != null) {
+            //一级缓存中存在则处理后直接返回
+            handleLocallyCachedOutputParameters(ms, key, parameter, boundSql);
+        } else {
+            //一级缓存未命中，则进行查询
+            list = queryFromDatabase(ms, parameter, rowBounds, resultHandler, key, boundSql);
+        }
+        return list;
+    }
+	
+    /* 查询数据库 */
+    private <E> List<E> queryFromDatabase(...) {
+        //执行具体查询
+        list = doQuery(ms, parameter, rowBounds, resultHandler, boundSql);
+        //缓存结果到一级缓存
+        localCache.putObject(key, list);
+    }
+    
+    /* 根据传入信息创建对应CacheKey */
+    public CacheKey createCacheKey(...) {
+		//具体处理
+    }
+}
+```
+
+##### Cache
+
+- Mybatis缓存容器对象接口
+- org.apache.ibatis.cache.Cache
+
+##### PerpetualCache
+
+- 缓存容器对象
+- Cache接口实现类，一级缓存固定此实现类
+
+```java
+//org.apache.ibatis.cache.impl.PerpetualCache
+public class PerpetualCache implements Cache {
+    //缓存存储集合，key为CacheKey
+    private final Map<Object, Object> cache = new HashMap<>();
+    
+    /* 存储 */
+    public void putObject(Object key, Object value) {
+        cache.put(key, value);
+    }
+    
+     /* 获取 */
+    public Object getObject(Object key) {
+        return cache.get(key);
+    }
+    
+     /* 清除 */
+    public Object removeObject(Object key) {
+        return cache.remove(key);
+    }
+}
+```
+
+##### CacheKey
+
+- 缓存对象的key值对象
+
+```java
+//
+public class CacheKey implements Cloneable, Serializable {
+    //key值的存储信息
+	private List<Object> updateList;
+}
+```
+
+#### 过程解析
+
+```bash
+# 容器创建
+	# sqlSessionFactory创建sqlSession时，会创建其对应Executor对象
+		# org.apache.ibatis.session.SqlSessionFactory#openSession()
+		# org.apache.ibatis.session.defaults.DefaultSqlSessionFactory#openSessionFromDataSource
+		# org.apache.ibatis.session.Configuration#newExecutor
+	# Executor创建时，在其抽象父类BaseExecutor的构造中会创建PerpetualCache对象
+	# 注
+		# sqlSession -- Executor -- PerpetualCache
+		# 所以一级缓存是对应sqlSession，同一个sqlSession进行方法调用/创建的mapper代理对象共享一个一级缓存容器
+		
+# 缓存管理
+	# 在BaseExecutor中，进行JDBC操作前，会尝试从一级缓存中获取结果集
+		# org.apache.ibatis.executor.BaseExecutor#query
+		# 一级缓存命中，直接返回
+		# 一级缓存未命中
+			# org.apache.ibatis.executor.BaseExecutor#queryFromDatabase
+			# 进行JDBC操作
+				# org.apache.ibatis.executor.BaseExecutor#doQuery
+			# 将结果集缓存
+				# org.apache.ibatis.cache.impl.PerpetualCache#putObject
+```
+
+### 二级缓存
+
+#### 涉及类库
+
+##### CachingExecutor
+
+- 进行缓存管理的Executor实现类
+- 只进行二级缓存管理
+  - 持有进行具体JDBC操作的Executor对象
+
+```java
+//org.apache.ibatis.executor.CachingExecutor
+public class CachingExecutor implements Executor {
+    //具体JDBC操作的Executor对象
+    private final Executor delegate;
+    //二级缓存的管理器对象
+    private final TransactionalCacheManager tcm = new TransactionalCacheManager();
+
+    /* 查询操作时进行二级缓存控制 */
+    public <E> List<E> query(...) {
+        //从MappedStatement中获取对应二级缓存容器对象(Cache实现类)
+        Cache cache = ms.getCache();
+        //如果当前MappedStatement有对应Cache容器对象，则进行二级缓存控制
+        if (cache != null) {
+            //尝试从二级缓存中获取结果集
+            List<E> list = (List<E>) tcm.getObject(cache, key);
+            if (list == null) {
+                //二级缓存未命中，则调用被包装的Executor执行JDBC操作
+                list = delegate.query(ms, parameterObject, rowBounds, resultHandler, key, boundSql);
+                //将获取结果集保存至二级缓存
+                tcm.putObject(cache, key, list); 
+            }
+            return list;
+        }
+        //当前MappedStatement没有对应Cache容器对象，跳过二级缓存控制
+        return delegate.query(ms, parameterObject, rowBounds, resultHandler, key, boundSql);
+    }
+    
+    /* 二级缓存刷新 */
+    private void flushCacheIfRequired(MappedStatement ms) {
+        Cache cache = ms.getCache();
+        //如果参数flushCacheRequired为true，表示更新操作需要刷新二级缓存
+        if (cache != null && ms.isFlushCacheRequired()) {  
+            //进行二级缓存刷新
+            tcm.clear(cache);
+        }
+    }
+}
+```
+
+##### Configuration
+
+- 持有一个保存二级缓存容器对象的map集合
+
+```java
+public class Configuration {
+    //key值为mapperClass全限定类名/mapper.xml的namespace
+    protected final Map<String, Cache> caches = new StrictMap<>("Caches collection");
+    //二级缓存全局控制参数，默认为true
+    protected boolean cacheEnabled = true;
+
+    /* 添加二级缓存容器对象 */
+    public void addCache(Cache cache) {
+        caches.put(cache.getId(), cache);
+    }
+    
+    /* 获取二级缓存容器对象 */
+    public Cache getCache(String id) {
+        return caches.get(id);
+    }
+
+    /* 创建Executor对象时，受全局参数控制 */
+    public Executor newExecutor(Transaction transaction, ExecutorType executorType) {
+        Executor executor = new SimpleExecutor(this, transaction);
+        //如果开启全局二级缓存，则会使用CachingExecutor包装具体Executor
+        if (cacheEnabled) {
+            executor = new CachingExecutor(executor);
+        }
+        executor = (Executor) interceptorChain.pluginAll(executor);
+        return executor;
+    }
+}
+```
+
+##### MappedStatement
+
+- 持有当前MappedStatement所属nameSpace对应的二级缓存容器对象
+
+```java
+public final class MappedStatement {
+    //二级缓存容器对象
+    private Cache cache;
+
+    /* 设置二级缓存容器对象 */
+    public Builder cache(Cache cache) {
+        mappedStatement.cache = cache;
+        return this;
+    }
+    
+    /* 获取二级缓存容器对象 */
+    public Cache getCache() {
+        return cache;
+    }
+}
+```
+
+##### TransactionalCacheManager
+
+- 事务缓存管理器
+
+```java
+//org.apache.ibatis.cache.TransactionalCacheManager
+public class TransactionalCacheManager {
+    //事务缓存存储集合，key为二级缓存容器对象
+    private final Map<Cache, TransactionalCache> transactionalCaches = new HashMap<>();
+
+    /* 获取二级缓存容器对象 */
+    private TransactionalCache getTransactionalCache(Cache cache) {
+        //如果当前二级缓存没有对应事务缓存对象，则使用构造创建
+        return transactionalCaches.computeIfAbsent(cache, TransactionalCache::new);
+    }
+    /* 获取二级缓存中对应CacheKey的缓存结果 */
+    public Object getObject(Cache cache, CacheKey key) {
+        return getTransactionalCache(cache).getObject(key);
+    }
+    /* 将查询结果已CacheKey为值缓存到二级缓存中 */
+    public void putObject(Cache cache, CacheKey key, Object value) {
+        getTransactionalCache(cache).putObject(key, value);
+    }
+    /* 清除当前二级缓存容器对应的缓存数据 */
+    public void clear(Cache cache) {
+        getTransactionalCache(cache).clear();
+    }
+    /* 刷新事务缓存数据到二级缓存中 */
+    public void commit() {
+        for (TransactionalCache txCache : transactionalCaches.values()) {
+            txCache.commit();
+        }
+    }
+}
+```
+
+##### TransactionalCache
+
+- 事务缓存容器
+
+```java
+//org.apache.ibatis.cache.decorators.TransactionalCache
+public class TransactionalCache implements Cache {
+    //ms对应的真实Cache容器对象
+    private Cache delegate;
+    //事务结果缓存map
+    private final Map<Object, Object> entriesToAddOnCommit;
+
+    /* 将查询结果缓存到二级缓存中 */
+    public void putObject(Object key, Object object) {
+        //此时仅仅保存在事务结果缓存map中
+        entriesToAddOnCommit.put(key, object);
+    }
+    /* 从二级缓存中获取结果 */
+    public Object getObject(Object key) {
+        // 从真实二级缓存容器对象中获取缓存数据
+        Object object = delegate.getObject(key);
+        return object;
+    }
+    /* 刷新事务缓存数据到二级缓存中 */
+    private void flushPendingEntries() {
+        for (Map.Entry<Object, Object> entry : entriesToAddOnCommit.entrySet()) {
+            delegate.putObject(entry.getKey(), entry.getValue());
+        }
+    }
+}
+```
+
+##### MapperBuilderAssistant
+
+- mapper解析助手
+
+```java
+public class MapperBuilderAssistant extends BaseBuilder {
+    //二级缓存对象临时引用
+    private Cache currentCache;
     
 }
+```
+
+#### 涉及配置
+
+##### 主配置文件
+
+```xml
+<settings>
+    <!-- 对应Configuration中cacheEnabled属性 -->
+    <setting name = "cacheEnabled" value = "true" />
+</settings>
+```
+
+##### Mapper配置文件
+
+```xml
+<mapper namespace="mapper.TransferMapper">
+    <!-- 二级缓存配置标签；type：对应二级缓存实现类 -->
+    <cache type="具体实现类"/>
+    <!-- flushCache：当前操作是否需要刷新二级缓存 -->
+    <update id=""  flushCache="false"/>
+</mapper>
+```
+
+##### 注解配置
+
+@CacheNamespace注解
+
+#### 过程解析
+
+##### 配置控制
+
+```bash
+# 主配置文件中对应cacheEnabled参数配置
+	# 对应Configuration中cacheEnabled属性
+		# 默认为true，表示全局开启二级缓存
+	# 影响
+		# 在我们获取SqlSession对象时，会创建其对应Executor对象
+			# org.apache.ibatis.session.Configuration#newExecutor
+            # 此时根据cacheEnabled参数，会使用CachingExecutor包装具体Executor
+            # 如此在sqlSession借助Executor进行数据库操作时，会先经过CachingExecutor，此时可以通过CachingExecutor实现二级缓存的全局控制
+
+# mapper文件配置的cache标签
+	# 1. 在解析mapper.xml配置文件时，如果存在cache标签
+		# org.apache.ibatis.builder.xml.XMLMapperBuilder#configurationElement
+		# org.apache.ibatis.builder.xml.XMLMapperBuilder#cacheElement
+		# 1. 获取二级缓存类型type参数
+		# 2. 创建二级缓存
+			# org.apache.ibatis.builder.MapperBuilderAssistant#useNewCache
+			# 此时做了几件事
+				# 1. 创建二级缓存对象，id为当前nameSpace
+				# 2. 将二级缓存cache对象添加到Configuration中
+					# org.apache.ibatis.session.Configuration#addCache
+				# 3. 将cache对象保存到临时引用
+					# currentCache = cache;
+	# 2. 解析单个操作标签(select|insert|update|delete)时
+    	# org.apache.ibatis.builder.xml.XMLMapperBuilder#buildStatementFromContext
+        # org.apache.ibatis.builder.xml.XMLStatementBuilder#parseStatementNode
+        # 此时借助builderAssistant创建MappedStatement
+        	# org.apache.ibatis.builder.MapperBuilderAssistant#addMappedStatement
+        	# 1. 创建MappedStatement对象
+        	# 2. 从currentCache临时引用中获取二级缓存cache对象保存到MappedStatement对象中
+
+# 总述
+	# cacheEnabled参数配置
+		# 控制了是否使用CachingExecutor包装具体Executor对象，达到二级缓存的全局控制
+	# cache标签
+		# 1. Configuration中对应caches默认创建空集合，是全局二级缓存存储map，key为nameSpace
+			# 二级缓存对象时namespace级别由此而来
+		# 2. 如果配置了cache标签，则会创建当前namespace对应的cache对象保存到Configuration中，并保存到currentCache临时引用
+		# 3. 解析操作语句标签时，创建对应MappedStatement对象，此时通过currentCache临时引用获取当前nameSpace第一个Cache对象
+			# 同一mapper.xml中对应MappedStatement对象共享同一个二级缓存cache
+			
+# 结论
+	# Configuration中的二级缓存map是固定创建的
+	# 如果配置了cacheEnabled，但是没有配置cache标签
+		# 1. 会使用CachingExecutor包装具体Executor对象
+		# 2. 不会创建nameSpace对应cache对象保存到Configuration和MappedStatement中
+		# 3. CachingExecutor由于获取不到MappedStatement中的cache对象，不会进行二级缓存操作
+	# 如果配置了cache标签，但是cacheEnabled为false
+		# 1. 不会使用CachingExecutor包装具体Executor对象
+		# 2. 创建nameSpace对应cache对象保存到Configuration和MappedStatement中
+		# 3. 由于没有CachingExecutor进行处理，所以不会向cache对象中缓存查询结果
+```
+
+##### 流程分析
+
+```bash
+# 假定cacheEnabled为true，且配置了cache标签
+	# 使用CachingExecutor包装具体Executor对象
+	# 创建nameSpace对应cache对象保存到Configuration和MappedStatement中
+	
+# 缓存查询结果
+	# sqlSession执行查询时调用executor的query方法
+		# org.apache.ibatis.session.defaults.DefaultSqlSession#selectList
+		# org.apache.ibatis.executor.Executor#query
+	# 由于此时使用CachingExecutor包装具体Executor对象，则调用CachingExecutor的query方法
+		# org.apache.ibatis.executor.CachingExecutor#query
+		# 1. 获取MappedStatement中cache对象
+			# org.apache.ibatis.mapping.MappedStatement#getCache
+		# 2. 借助TransactionalCacheManager获取cache对象对应TransactionalCache对象
+			# org.apache.ibatis.cache.TransactionalCacheManager#getObject
+				# org.apache.ibatis.cache.TransactionalCacheManager#getTransactionalCache
+		# 3. 尝试获取cache对象中缓存结果
+			# org.apache.ibatis.cache.decorators.TransactionalCache#getObject
+			# 获取缓存结果是从TransactionalCache对象持有的cache对象中获取，也就是解析配置时创建的二级缓存容器
+		# 4. 缓存未命中时，进行JDBC操作获取结果集
+		# 5. 借助TransactionalCacheManager缓存结果集数据
+			# org.apache.ibatis.cache.TransactionalCacheManager#putObject
+				# org.apache.ibatis.cache.decorators.TransactionalCache#putObject
+				# 此时结果是缓存在TransactionalCache的entriesToAddOnCommit事务缓冲集合中
+# 二级缓存生效
+	# 由上述的查询结果缓存过程可知
+		# 1. 查询结果最先缓存在TransactionalCache的entriesToAddOnCommit事务缓冲集合中
+		# 2. 查询是从TransactionalCache对象持有的cache对象中获取
+		# 3. 所以此时二级缓存是无效的，无法获取对应的结果集
+	# TransactionalCache存在方法flushPendingEntries可以将entriesToAddOnCommit事务缓冲集合中对象添加到cache对象中
+		# org.apache.ibatis.cache.decorators.TransactionalCache#flushPendingEntries
+	# 回溯代码可以发现，在sqlSession调用方法时可以触发缓存刷新
+		# org.apache.ibatis.session.defaults.DefaultSqlSession#commit
+		# org.apache.ibatis.session.defaults.DefaultSqlSession#close
+
+# 结论
+	# 1. 二级缓存对应namespace
+		# 同一namespace层级下MappedStatement共享同一cache对象
+	# 2. 二级缓存存储在Configuration和MappedStatement中
+	# 3. 二级缓存不同于一个缓存，不是即时生效的
+		# 通过TransactionalCacheManager、TransactionalCache来控制二级缓存的事务控制
+		
+# 注
+	# 此处仅分析大致过程，细节需后续学习
+```
+
+##### 缓存序列化
+
+```bash
+# 常态来说一/二级缓存具体实现都是PerpetualCache中的map集合来存储查询结果，但对于结果集的处理略有不同
+	# 一级缓存
+		# 一级缓存直接使用PerpetualCache，没有包装，所以进行结果集存储时是直接调用map集合存储
+			# org.apache.ibatis.cache.impl.PerpetualCache#putObject
+				# java.util.Map#put
+	# 二级缓存
+		# 二级缓存不同于一级缓存，它对应的PerpetualCache是有使用装饰者模式包装的，具体代码
+			# org.apache.ibatis.builder.MapperBuilderAssistant#useNewCache
+				# org.apache.ibatis.mapping.CacheBuilder#build
+					# org.apache.ibatis.mapping.CacheBuilder#newCacheDecoratorInstance
+		# 由于二级缓存是被包装的PerpetualCache，那么在事务提交时，缓存结果保存到二级缓存中时，不是直接由PerpetualCache处理，而是先调用包装类的方法
+			# 此处重点的方法是
+				# org.apache.ibatis.cache.decorators.SerializedCache#putObject
+				# org.apache.ibatis.cache.decorators.SerializedCache#serialize
+			# 此处将查询结果进行序列化后才保存到PerpetualCache中
+# 结论
+	# 一级缓存存入和取出的是同一对象
+	# 二级缓存取出的不是存入的对象，而是存入对象序列化的结果
+		# 二级缓存存储结果，其对应类要实现Serializable序列化接口
+```
+
+#### 第三方缓存
+
+Mybatis中缓存存在形式为Cache接口实现类
+
+- 一级缓存固定为PerpetualCache
+- 二级缓存默认为PerpetualCache
+  - 可以通过cache标签的type来使用第三方cache替代PerpetualCache
+    - 可以自定义二级缓存实现类
+  - 具体代码在org.apache.ibatis.session.Configuration#newExecutor中可查看
+
+- 使用默认PerpetualCache作为二级缓存存在局限性
+  - 不可以跨域使用
+    - cache存储容器还是对应于程序唯一的Configuration对象
+
+**我们可以使用Mybatis整合Redis**
+
+- redis可以实现跨域存储
+
+##### 依赖
+
+```xml
+<dependency> 
+    <groupId>org.mybatis.caches</groupId> 
+    <artifactId>mybatis-redis</artifactId> 
+    <version>1.0.0-beta2</version> 
+</dependency>
+```
+
+##### Redis配置文件
+
+```properties
+# redis.properties
+redis.host=localhost
+redis.port=6379
+redis.connectionTimeout=5000
+redis.password=
+redis.database=0
+```
+
+##### Mybatis配置
+
+- xml
+
+  ```xml
+  <cache type="org.mybatis.caches.redis.RedisCache" /> 
+  ```
+
+- mapperClass
+
+  ```java
+  @CacheNamespace(implementation = RedisCache.class)
+  ```
+
+##### 思路
+
+```bash
+# RedisConfigurationBuilder
+	# org.mybatis.caches.redis.RedisConfigurationBuilder
+	# 解析redis.properties配置文件，获取redis连接信息
+# RedisCache
+	# org.mybatis.caches.redis.RedisCache
+	# Cache接口实现类
+	# 将查询结果通过Jedis存储到Redis数据库中
+```
+
+### 插件机制
+
+插件，通常是提供增强操作的
+
+#### 配置
+
+```xml
+<plugins>
+    <plugin interceptor="插件类全限定类名"></plugin>
+</plugins>
+```
+
+#### 注解
+
+```bash
+# 实现接口Interceptor
+# 添加注解
+	# @Intercepts({@Signature(type= Executor.class, method = "update", args = {MappedStatement.class,Object.class})})
+	# @Intercepts
+		# 声明多个@Signature
+	# @Signature
+		# type
+			# 拦截的对象类型
+		# method
+			# 对应拦截的方法
+        # args
+			# 对应拦截方法的参数列表
+			# 避免方法重载导致的异常
+```
+
+#### 涉及类库
+
+##### Interceptor
+
+- 拦截器接口
+
+- org.apache.ibatis.plugin.Interceptor
+
+##### InterceptorChain
+
+- 拦截器链
+
+```java
+//InterceptorChain
+public class InterceptorChain {
+	//拦截器集合
+    private final List<Interceptor> interceptors = new ArrayList<>();
+
+    /* 进行拦截包装 */
+    public Object pluginAll(Object target) {
+        for (Interceptor interceptor : interceptors) {
+            target = interceptor.plugin(target);
+        }
+        return target;
+    }
+    /* 添加拦截器 */
+    public void addInterceptor(Interceptor interceptor) {
+        interceptors.add(interceptor);
+    }
+	/* 获取拦截器 */
+    public List<Interceptor> getInterceptors() {
+        return Collections.unmodifiableList(interceptors);
+    }
+}
+```
+
+##### Plugin
+
+- InvocationHandler接口实现类
+
+```java
+//org.apache.ibatis.plugin.Plugin
+public class Plugin implements InvocationHandler {
+    //被包装对象
+    private final Object target;
+    //拦截器
+    private final Interceptor interceptor;
+	
+    /* 通过动态代理将对象包装 */
+    public static Object wrap(Object target, Interceptor interceptor) {
+        Map<Class<?>, Set<Method>> signatureMap = getSignatureMap(interceptor);
+        Class<?> type = target.getClass();
+        Class<?>[] interfaces = getAllInterfaces(type, signatureMap);
+        if (interfaces.length > 0) {
+            return Proxy.newProxyInstance(
+                type.getClassLoader(),
+                interfaces,
+                new Plugin(target, interceptor, signatureMap));
+        }
+        return target;
+    }
+
+    /* invoke方法调用 */
+    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+        try {
+            Set<Method> methods = signatureMap.get(method.getDeclaringClass());
+            //如果此方法为当前Interceptor拦截器的目标方法，则进行拦截调用
+            if (methods != null && methods.contains(method)) {
+                return interceptor.intercept(new Invocation(target, method, args));
+            }
+            return method.invoke(target, args);
+        } catch (Exception e) {
+            throw ExceptionUtil.unwrapThrowable(e);
+        }
+    }
+	
+    //解析当前Interceptor的@Intercepts注解，获取需要拦截的方法集合
+    private static Map<Class<?>, Set<Method>> getSignatureMap(Interceptor interceptor) {
+        Intercepts interceptsAnnotation = interceptor.getClass().getAnnotation(Intercepts.class);
+        // issue #251
+        if (interceptsAnnotation == null) {
+            throw new PluginException("No @Intercepts annotation was found in interceptor " + interceptor.getClass().getName());
+        }
+        Signature[] sigs = interceptsAnnotation.value();
+        Map<Class<?>, Set<Method>> signatureMap = new HashMap<>();
+        //获取@Signature注解集合获取对应方法
+        for (Signature sig : sigs) {
+            Set<Method> methods = signatureMap.computeIfAbsent(sig.type(), k -> new HashSet<>());
+            try {
+                Method method = sig.type().getMethod(sig.method(), sig.args());
+                methods.add(method);
+            } catch (NoSuchMethodException e) {
+                throw new PluginException("Could not find method on " + sig.type() + " named " + sig.method() + ". Cause: " + e, e);
+            }
+        }
+        return signatureMap;
+    }
+}
+```
+
+#### 流程解析
+
+```bash
+# 拦截器创建
+	# 拦截器配置在主配置文件中，当主配置文件解析时，会创建拦截器
+		# org.apache.ibatis.builder.xml.XMLConfigBuilder#pluginElement
+			# 根据拦截器类型创建实例
+				# (Interceptor) resolveClass(interceptor).getDeclaredConstructor().newInstance();
+			# 将拦截器添加到Configuration中
+				# org.apache.ibatis.session.Configuration#addInterceptor
+
+# 拦截器使用
+	# 通过分析Plugin类可知，拦截增强实际就是通过动态代理创建代理对象实现增强
+	# 而Mybatis体系中对应于JDBC操作有比较重要的四个对象，而插件就是通过将以下四个对象进行代理实现
+		# Executor
+			# 代理触发点
+				# org.apache.ibatis.session.Configuration#newExecutor
+				# org.apache.ibatis.plugin.InterceptorChain#pluginAll
+			# 代理对象增强方法
+				# update, query, flushStatements, commit, rollback, getTransaction, close, isClosed
+		# ParameterHandler
+			# 代理触发点
+				# org.apache.ibatis.session.Configuration#newParameterHandler
+				# org.apache.ibatis.plugin.InterceptorChain#pluginAll
+			# 代理对象增强方法
+				# getParameterObject, setParameters
+		# ResultSetHandler
+			# 代理触发点
+				# org.apache.ibatis.session.Configuration#newResultSetHandler
+				# org.apache.ibatis.plugin.InterceptorChain#pluginAll
+			# 代理对象增强方法
+				# handleResultSets, handleOutputParameters
+		# StatementHandler
+			# 代理触发点
+				# org.apache.ibatis.session.Configuration#newExecutor
+				# org.apache.ibatis.plugin.InterceptorChain#pluginAll
+			# 代理对象增强方法
+				# prepare, parameterize, batch, update, query
+				
+# pluginAll方法分析
+	# org.apache.ibatis.plugin.InterceptorChain#pluginAll
+	# 遍历所有拦截器，调用其plugin方法
+		# org.apache.ibatis.plugin.Interceptor#plugin
+		# 调用了Plugin类的wrap方法
+			# org.apache.ibatis.plugin.Plugin#wrap
+
+# wrap方法分析
+	# 1. 解析当前Interceptor的Intercepts注解，获取当前Interceptor拦截的目标方法
+		# org.apache.ibatis.plugin.Plugin#getSignatureMap
+	# 2. 判断当前被代理对象是否存在其type的拦截方法配置
+		# org.apache.ibatis.plugin.Plugin#getAllInterfaces
+	# 3. 根据上述判断成立，则使用动态代理包装被代理对象
+		# 判断成立，则使用动态代理包装被代理对象
+			# java.lang.reflect.Proxy#newProxyInstance
+		# 判断不成立，则直接返回被代理对象 
+```
+
+#### 自定义拦截器
+
+```java
+@Intercepts({@Signature(
+    type= Executor.class,
+    method = "update",
+    args = {MappedStatement.class,Object.class})})
+public class ExamplePlugin implements Interceptor {
+    public Object intercept(Invocation invocation) throws Throwable {
+        return invocation.proceed();
+    }
+    public Object plugin(Object target) {
+        return Plugin.wrap(target, this);
+    }
+    public void setProperties(Properties properties) {
+    }
+}
+```
+
+### 延时加载机制
+
+```bash
+# 在使用resultMap对应association/collection时，如果使用嵌套查询的方式，则可以实现延时加载
+# 延时加载概念
+	# 在使用ResultHandler获取请求的结果对象时
+		# 如果是配置为resultMap
+		# resultMap对应子节点存在fetchType="lazy"的懒加载配置
+	# 则不直接返回查询结果对象
+    	# 而是返回包装的结果对象
+    	# 在包装的结果对象进行目标数据获取时，才调用对应sql进行数据获取，再设置值
+    		# 达到延时加载的效果
+# 默认使用JavassistProxyFactory实现延时加载
+	# Configuration
+		# ProxyFactory proxyFactory = new JavassistProxyFactory();
+```
+
+#### 配置
+
+##### 主配置文件
+
+```xml
+<settings>
+    <!-- 打开延迟加载的开关 -->
+    <setting name="lazyLoadingEnabled" value="true"/>
+    <!-- 将积极加载改为消极加载，即延迟加载 -->
+    <setting name="aggressiveLazyLoading" value="false"/>
+</settings>
+```
+
+##### mapper配置文件
+
+```xml
+<resultMap id="userAccountMap" type="Account">
+    <id property="id" column="id"></id>
+    <!-- 配置封装 User 的内容
+            select：查询用户的唯一标识
+            column：用户根据id查询的时候，需要的参数值
+			fetchType：默认值为lazy表示延迟加载，此处配置可覆盖全局配置
+        -->
+    <association property="user" column="uid" fetchType="lazy" javaType="User" select="cn.ideal.mapper.UserMapper.findById"></association>
+</resultMap>
+
+```
+
+#### 涉及类库
+
+##### DefaultResultSetHandler
+
+- ResultSetHandler接口实现类
+
+```java
+//org.apache.ibatis.executor.resultset.DefaultResultSetHandler
+public class DefaultResultSetHandler implements ResultSetHandler {
+    
+    /* 创建结果对象 */
+    private Object createResultObject(...) throws SQLException {
+        this.useConstructorMappings = false; // reset previous mapping result
+        final List<Class<?>> constructorArgTypes = new ArrayList<>();
+        final List<Object> constructorArgs = new ArrayList<>();
+        Object resultObject = createResultObject(rsw, resultMap, constructorArgTypes, constructorArgs, columnPrefix);
+        if (resultObject != null && !hasTypeHandlerForResultObject(rsw, resultMap.getType())) {
+            final List<ResultMapping> propertyMappings = resultMap.getPropertyResultMappings();
+            for (ResultMapping propertyMapping : propertyMappings) {
+                // 判断是否嵌套查询(使用select属性)、是否延时加载
+                if (propertyMapping.getNestedQueryId() != null && propertyMapping.isLazy()) {
+                    //延时加载，通过动态代理创建代理对象
+                    resultObject = configuration.getProxyFactory().createProxy(...);
+                    break;
+                }
+            }
+        }
+        this.useConstructorMappings = resultObject != null && !constructorArgTypes.isEmpty(); // set current mapping result
+        return resultObject;
+    }
+}
+```
+
+##### JavassistProxyFactory
+
+```java
+//org.apache.ibatis.executor.loader.javassist.JavassistProxyFactory
+public class JavassistProxyFactory implements org.apache.ibatis.executor.loader.ProxyFactory {
+    @Override
+    public Object createProxy(Object target, ResultLoaderMap lazyLoader, Configuration configuration, ObjectFactory objectFactory, List<Class<?>> constructorArgTypes, List<Object> constructorArgs) {
+        return EnhancedResultObjectProxyImpl.createProxy(target, lazyLoader, configuration, objectFactory, constructorArgTypes, constructorArgs);
+    }
+
+    public Object createDeserializationProxy(Object target, Map<String, ResultLoaderMap.LoadPair> unloadedProperties, ObjectFactory objectFactory, List<Class<?>> constructorArgTypes, List<Object> constructorArgs) {
+        return EnhancedDeserializationProxyImpl.createProxy(target, unloadedProperties, objectFactory, constructorArgTypes, constructorArgs);
+    }
+    
+    //内部类，实现了MethodHandler接口
+    private static class EnhancedResultObjectProxyImpl implements MethodHandler {
+        //代理对象的类
+        private final Class<?> type;
+        //触发方法列表，调用此方法时，将会加载全部懒加载属性
+        private final Set<String> lazyLoadTriggerMethods;
+    }
+    
+    @Override
+    //具体处理没有详细分析
+    public Object invoke(Object enhanced, Method method, Method methodProxy, Object[] args) throws Throwable {
+        final String methodName = method.getName();
+        try {
+            synchronized (lazyLoader) {
+                if (WRITE_REPLACE_METHOD.equals(methodName)) {
+                    Object original;
+                    if (constructorArgTypes.isEmpty()) {
+                        original = objectFactory.create(type);
+                    } else {
+                        original = objectFactory.create(type, constructorArgTypes, constructorArgs);
+                    }
+                    PropertyCopier.copyBeanProperties(type, enhanced, original);
+                    if (lazyLoader.size() > 0) {
+                        return new JavassistSerialStateHolder(original, lazyLoader.getProperties(), objectFactory, constructorArgTypes, constructorArgs);
+                    } else {
+                        return original;
+                    }
+                } else {
+                    if (lazyLoader.size() > 0 && !FINALIZE_METHOD.equals(methodName)) {
+                        if (aggressive || lazyLoadTriggerMethods.contains(methodName)) {
+                            lazyLoader.loadAll();
+                        } else if (PropertyNamer.isGetter(methodName)) {
+                            final String property = PropertyNamer.methodToProperty(methodName);
+                            if (lazyLoader.hasLoader(property)) {
+                                lazyLoader.load(property);
+                            }
+                        }
+                    }
+                }
+            }
+            return methodProxy.invoke(enhanced, args);
+        } catch (Throwable t) {
+            throw ExceptionUtil.unwrapThrowable(t);
+        }
+    }
+}
+}
+```
+
+#### 原理解析
+
+```bash
+# 解析配置
+	# 主配置解析
+		# 1. 解析settings标签，获取配置对应properties
+			# org.apache.ibatis.builder.xml.XMLConfigBuilder#settingsAsProperties
+		# 2. 根据properties，设置Configuration中对应属性值
+			# org.apache.ibatis.builder.xml.XMLConfigBuilder#settingsElement
+	# mapper配置解析
+    	# 1. 解析resultMap标签
+    		# org.apache.ibatis.builder.xml.XMLMapperBuilder#resultMapElements
+    	# 2. 获取resultMap对应子标签属性内容
+    		# org.apache.ibatis.builder.xml.XMLMapperBuilder#buildResultMappingFromContext
+    			# 根据全局lazyLoadingEnabled参数和association/collection的lazy属性，获取当前association/collection是否延迟加载
+    	# 3. 借助builderAssistant创建ResultMapping对象
+    		# org.apache.ibatis.builder.MapperBuilderAssistant#buildResultMapping
+    		
+# 结果集解析
+	# StatementHandler处理结果集时，借助DefaultResultSetHandler进行结果集解析封装，获取对应结果对象
+	# DefaultResultSetHandler解析处理时，根据是否延迟加载判断，确认是否对返回结果对象进行包装
+		# org.apache.ibatis.executor.resultset.DefaultResultSetHandler#createResultObject
+		
+# 代理对象进行属性获取时，则会触发包装对象的代理方法，执行对应sql获取结果进行赋值		
 ```
 
