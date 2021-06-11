@@ -42,7 +42,6 @@
 		init-method：bean初始化处理方法
 		destroy-method：bean销毁方法
 	-->
-
 	<bean id="person"
 		  class="model.Person"
 		  lazy-init="true"
@@ -136,92 +135,158 @@
 
 ### BeanFactory
 
-```bash
-# 容器顶级接口
-	# 定义一些spring容器的功能规范
-```
+- Spring容器顶级接口
+- 定义一些spring容器的功能规范
+- org.springframework.beans.factory.BeanFactory
 
-#### ApplicationContext
+### ApplicationContext
 
-```bash
-# 实现了BeanFactory的容器高级接口
-	# 常用子类
-		# 解析xml
-			# ClassPathXmlApplicationContext
-				# 使用classpath类路径加载xml
-			# FileSystemXmlApplicationContext
-				# 使用绝对路径加载xml(不推荐)
-		# 基于注解配置
-			# AnnotationConfigApplicationContext
-				# 加载Configuration配置类
-```
+- 实现了BeanFactory的容器高级接口
 
-#### AbstractApplicationContext
+- 实现了一些结构，为Spring容器提供了额外功能
 
-```bash
-# ApplicationContext抽象子类
-# 内部定义refresh方法具体实现
-	# 为spring容器具体功能实现入口
-```
+- org.springframework.context.ApplicationContext
+
+### AbstractApplicationContext
+
+- ApplicationContext抽象子类
+
+- 内部定义refresh方法具体实现
+  - spring容器具体功能实现入口
 
 ```java
+//org.springframework.context.support.AbstractApplicationContext
 public abstract class AbstractApplicationContext extends DefaultResourceLoader implements ConfigurableApplicationContext {
     //BeanFactory后置处理器集合
     private final List<BeanFactoryPostProcessor> beanFactoryPostProcessors = new ArrayList<>();
     //同步监视器的“刷新”和“销毁”
 	private final Object startupShutdownMonitor = new Object();
+    //持有真正进行Bean数据加载的容器对象
+    private DefaultListableBeanFactory beanFactory;
     
     @Override
 	public void refresh() throws BeansException, IllegalStateException {
 		//具体功能实现入口
 	}
+    
+    /* 注册BeanFactoryPostProcessor */
+    public void addBeanFactoryPostProcessor(BeanFactoryPostProcessor postProcessor) {
+		this.beanFactoryPostProcessors.add(postProcessor);
+	}
 }
 ```
 
-#### DefaultListableBeanFactory
+### 常用实现类
 
 ```bash
-# 成熟的BeanFactory
-	# 由我们使用的spring容器对象持有
-		# AbstractRefreshableApplicationContext
-			# private DefaultListableBeanFactory beanFactory;
-	# 真正进行加载Bean元数据进行对象创建及管理的对象
+# 常用子类
+	# 解析xml
+        # ClassPathXmlApplicationContext
+            # org.springframework.context.support.ClassPathXmlApplicationContext
+            # 使用classpath类路径加载xml
+        # FileSystemXmlApplicationContext
+            # org.springframework.context.support.FileSystemXmlApplicationContext
+            # 使用绝对路径加载xml(不推荐)
+	# 基于注解配置
+        # AnnotationConfigApplicationContext
+            # org.springframework.context.annotation.AnnotationConfigApplicationContext
+            # 加载Configuration配置类
 ```
 
+### DefaultListableBeanFactory
+
+- 成熟的BeanFactory
+
+- 真正进行加载Bean元数据进行对象创建及管理的对象
+  - 由我们使用的spring容器对象AbstractRefreshableApplicationContext持有
+
 ```java
+//org.springframework.beans.factory.support.DefaultListableBeanFactory
 public class DefaultListableBeanFactory extends AbstractAutowireCapableBeanFactory
 		implements ConfigurableListableBeanFactory, BeanDefinitionRegistry, Serializable {
     //beanDefinition容器
     private final Map<String, BeanDefinition> beanDefinitionMap = new ConcurrentHashMap<>(256);
     //单例池，用于保存实例化后的单例bean
     private final Map<String, Object> singletonObjects = new ConcurrentHashMap<>(256);
+    
+    
+    
+    /* 注册beanDefinition */
+    public void registerBeanDefinition(String beanName, BeanDefinition beanDefinition) throws BeanDefinitionStoreException {
+        this.beanDefinitionMap.put(beanName, beanDefinition);
+    }
+}
+```
+
+### AbstractBeanFactory
+
+- BeanFactory实现类
+
+- DefaultSingletonBeanRegistry实现类
+  - 提供单例bean注册功能
+  - org.springframework.beans.factory.support.DefaultSingletonBeanRegistry
+
+```java
+//org.springframework.beans.factory.support.AbstractBeanFactory
+public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport implements ConfigurableBeanFactory {
     //bean后处理器容器
     private final List<BeanPostProcessor> beanPostProcessors = new CopyOnWriteArrayList<>();
+    
+    /* 注册BeanPostProcessor实例 */
+    public void addBeanPostProcessor(BeanPostProcessor beanPostProcessor) {
+        this.beanPostProcessors.add(beanPostProcessor);
+    }
 }
 ```
 
 ### BeanDefinition
 
-```bash
-# bean定义的描述对象
-	# 具体实现
-		# org.springframework.beans.factory.support.RootBeanDefinition
-```
+- bean定义的描述对象的顶级接口
+- 定义了描述对象的具体行为
+
+- org.springframework.beans.factory.config.BeanDefinition
+
+### AbstractBeanDefinition
+
+- BeanDefinition抽象实现类
+- 提供大量BeanDefinition的属性和行为方法
 
 ```java
-public class RootBeanDefinition extends AbstractBeanDefinition {
-    //bean的Class类
+//org.springframework.beans.factory.support.AbstractBeanDefinition
+public abstract class AbstractBeanDefinition extends BeanMetadataAttributeAccessor implements BeanDefinition, Cloneable {
+    //bean对应类型
     private volatile Object beanClass;
-    //bean的作用域
+    //bean生命周期
     private String scope = SCOPE_DEFAULT;
-    //是否延迟加载
-    private boolean lazyInit = false;
-    //初始化方法名称
-    private String initMethodName;
-    //销毁方法名称
-    private String destroyMethodName;
+    //工厂方法名称
+    private String factoryMethodName;
+    //工厂bean名称
+    private String factoryBeanName;
 }
 ```
+
+### GenericBeanDefinition
+
+- 常用的AbstractBeanDefinition实现类
+- org.springframework.beans.factory.support.GenericBeanDefinition
+
+## 流程解析
+
+Spring加载单例过程主要为以下几个部分：
+
+- Spring容器创建
+- BeanDefinitions加载
+- BeanFactoryPostProcessor
+  - 获取BeanDefinition
+  - 实例化
+  - 后置处理
+    - 通过postProcessBeanFactory方法对BeanFactory进行增强处理
+    - 主要是操作BeanDefinitions
+- BeanPostProcessor加载
+  - 获取获取BeanDefinition
+  - 实例化
+- Bean实例化
+- BeanPostProcessor前置处理
 
 ### BeanFactory创建
 
@@ -234,6 +299,7 @@ public class RootBeanDefinition extends AbstractBeanDefinition {
     # org.springframework.context.support.AbstractApplicationContext#obtainFreshBeanFactory
         # org.springframework.context.support.AbstractRefreshableApplicationContext#refreshBeanFactory
      	   # org.springframework.context.support.AbstractRefreshableApplicationContext#createBeanFactory
+     	   # new DefaultListableBeanFactory()
 ```
 
 #### 注解解析方式
@@ -247,29 +313,32 @@ public class RootBeanDefinition extends AbstractBeanDefinition {
 #### xml解析方式
 
 ```bash
-#加载xml配置中对应所有bean配置
+# 加载xml配置中对应所有bean配置
+# 注意关键点方法即可
 
-# org.springframework.context.support.AbstractApplicationContext#refresh
-	# org.springframework.context.support.AbstractApplicationContext#obtainFreshBeanFactory
-		# org.springframework.context.support.AbstractRefreshableApplicationContext#refreshBeanFactory
-			# 经过一系列loadBeanDefinitions
+# 入口
+	# org.springframework.context.support.AbstractApplicationContext#refresh
+		# org.springframework.context.support.AbstractApplicationContext#obtainFreshBeanFactory
+			# org.springframework.context.support.AbstractRefreshableApplicationContext#refreshBeanFactory
 				# org.springframework.context.support.AbstractRefreshableApplicationContext#loadBeanDefinitions
-				# org.springframework.context.support.AbstractXmlApplicationContext#loadBeanDefinitions
-				# org.springframework.beans.factory.support.AbstractBeanDefinitionReader#loadBeanDefinitions
-				# org.springframework.beans.factory.xml.XmlBeanDefinitionReader#loadBeanDefinitions
-			# XmlBeanDefinitionReader：接手具体工作
-				# org.springframework.beans.factory.xml.XmlBeanDefinitionReader#doLoadBeanDefinitions
-					# org.springframework.beans.factory.xml.XmlBeanDefinitionReader#registerBeanDefinitions
-			# DefaultBeanDefinitionDocumentReader：接手具体工作
-            	# org.springframework.beans.factory.xml.DefaultBeanDefinitionDocumentReader#doRegisterBeanDefinitions
-            		# org.springframework.beans.factory.xml.DefaultBeanDefinitionDocumentReader#parseBeanDefinitions
-            			# org.springframework.beans.factory.xml.DefaultBeanDefinitionDocumentReader#parseDefaultElement
-            # BeanDefinitionParserDelegate：进行BeanDefinition解析工作
-            	# org.springframework.beans.factory.xml.BeanDefinitionParserDelegate#parseBeanDefinitionElement
-            # BeanDefinitionReaderUtils：进行BeanDefinition注册
-            	# org.springframework.beans.factory.support.BeanDefinitionReaderUtils#registerBeanDefinition
-            		# org.springframework.beans.factory.support.DefaultListableBeanFactory#registerBeanDefinition
-            			# this.beanDefinitionMap.put(beanName, beanDefinition)
+				
+# 资源加载为Document对象
+	# org.springframework.beans.factory.xml.XmlBeanDefinitionReader#doLoadBeanDefinitions
+	
+# 执行BeanDefinitions注册
+	# org.springframework.beans.factory.xml.DefaultBeanDefinitionDocumentReader#doRegisterBeanDefinitions
+	# org.springframework.beans.factory.xml.DefaultBeanDefinitionDocumentReader#parseDefaultElement
+		# 区别不同标签执行不同操作
+		
+# 针对bean标签进行处理
+	# org.springframework.beans.factory.xml.DefaultBeanDefinitionDocumentReader#processBeanDefinition
+		# 将标签节点解析为BeanDefinition对象
+			# org.springframework.beans.factory.xml.BeanDefinitionParserDelegate#parseBeanDefinitionElement
+		# 将解析后的BeanDefinition注册
+			# org.springframework.beans.factory.support.BeanDefinitionReaderUtils#registerBeanDefinition
+			# org.springframework.beans.factory.support.DefaultListableBeanFactory#registerBeanDefinition
+			# 注册到beanDefinitionMap中
+				# this.beanDefinitionMap.put(beanName, beanDefinition);
 ```
 
 #### 注解解析方式
@@ -291,39 +360,79 @@ public class RootBeanDefinition extends AbstractBeanDefinition {
 						# this.beanDefinitionMap.put(beanName, beanDefinition)
 ```
 
-## BeanFactoryPostProcessor
-
-```java
-//BeanFactory的后置处理器顶级接口
-//通过BeanFactoryPostProcessor在实例化BeanFactory后对其进行增强操作
-@FunctionalInterface
-public interface BeanFactoryPostProcessor {
-   void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) throws BeansException;
-}
-```
-
-### 自定义BeanFactoryPostProcessor
+#### 解析结果
 
 ```bash
-# 实现BeanFactoryPostProcessor接口
-# 配置将其交由spring管理
+# 解析后的BeanDefinition统一保存在DefaultListableBeanFactory的beanDefinitionMap
+	# 可以跟踪注册方法，获取我们想要的信息
+	# org.springframework.beans.factory.support.DefaultListableBeanFactory#registerBeanDefinition
+# 针对于不同的bean配置方法，解析后BeanDefinition内容不同
+    # 构造创建
+        # beanClass
+            # 全限定类型，即可获取对应构造器进行对象创建
+    # 静态方法创建
+        # beanClass
+        # factoryMethodName
+            # 根据全限定类名和对应静态方法名称，进行对象创建
+    # 实例方法创建
+        # factoryBeanName
+        # factoryMethodName
+            # 获取对应的实例工厂对象，调用对应实例方法进行对象创建
+```
+
+### BeanFactoryPostProcessor后置处理
+
+#### BeanFactoryPostProcessor
+
+- BeanFactory的后置处理器顶级接口
+- 通过BeanFactoryPostProcessor在实例化BeanFactory后对其进行增强操作
+- 函数式接口
+
+```java
+//org.springframework.beans.factory.config.BeanFactoryPostProcessor
+@FunctionalInterface
+public interface BeanFactoryPostProcessor {
+    /* 接收beanFactory */
+    void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) throws BeansException;
+}
 ```
 
 #### 实例化及调用
 
 ```bash
-# org.springframework.context.support.AbstractApplicationContext#refresh
+# 入口
+	# org.springframework.context.support.AbstractApplicationContext#refresh
 	# org.springframework.context.support.AbstractApplicationContext#invokeBeanFactoryPostProcessors
-		# 入口
-		# PostProcessorRegistrationDelegate：接手工作
-			# org.springframework.context.support.PostProcessorRegistrationDelegate#invokeBeanFactoryPostProcessors
-				# 获取BeanFactoryPostProcessor类型的BeanDefinition定义
-					# org.springframework.beans.factory.ListableBeanFactory#getBeanNamesForType
-				# 进行BeanFactoryPostProcessor实例化
-					# org.springframework.beans.factory.BeanFactory#getBean
-				# 进行BeanFactoryPostProcessor的后置处理调用
-					# org.springframework.context.support.PostProcessorRegistrationDelegate#invokeBeanFactoryPostProcessors
+	# org.springframework.context.support.PostProcessorRegistrationDelegate#invokeBeanFactoryPostProcessors
+
+# 1.定义加载
+	# 从BeanFactory中获取BeanFactoryPostProcessor类型的BeanDefinition
+	# org.springframework.beans.factory.ListableBeanFactory#getBeanNamesForType
+	
+# 2.实例创建
+	# 创建BeanFactoryPostProcessor实例
+	# org.springframework.beans.factory.BeanFactory#getBean
+	
+# 3.后置处理
+	# 后置处理方法postProcessBeanFactory调用
+	# org.springframework.context.support.PostProcessorRegistrationDelegate#invokeBeanFactoryPostProcessors
+	
+# 注：此流程为自定义BeanFactoryPostProcessor的标准流程
+	# 存在特殊BeanFactoryPostProcessor不一定经过此流程进行处理
+	# 可以跟踪其postProcessBeanFactory方法
 ```
+
+#### 自定义BeanFactoryPostProcessor
+
+```bash
+# 实现自定义BeanFactoryPostProcessor并且让其工作需要两步
+    # 实现BeanFactoryPostProcessor接口
+    # 配置将其交由spring管理
+```
+
+#### 
+
+
 
 ### BeanDefinitionRegistryPostProcessor
 
@@ -396,6 +505,147 @@ public interface BeanDefinitionRegistryPostProcessor extends BeanFactoryPostProc
 				# 返回一个增强后的Class：enhancedClass替换原BeanDefinition的Class
 				# 实现了将配置类实例进行包装
 ```
+
+
+
+### BeanPostProcessor加载
+
+#### BeanPostProcessor
+
+- 在bean实例化之后，进行后处理的顶级接口
+
+```java
+//org.springframework.beans.factory.config.BeanPostProcessor
+public interface BeanPostProcessor {
+    //bean初始化前处理
+	default Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
+		return bean;
+	}
+    //bean初始化后处理
+	default Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+		return bean;
+	}
+}
+```
+
+#### 加载注册
+
+```bash
+# 入口
+	# org.springframework.context.support.AbstractApplicationContext#refresh
+	# org.springframework.context.support.AbstractApplicationContext#registerBeanPostProcessors
+	# org.springframework.context.support.PostProcessorRegistrationDelegate#registerBeanPostProcessors
+	
+# 1.加载定义	
+	# 从BeanFactory中获取BeanPostProcessor类型定义
+    # org.springframework.beans.factory.ListableBeanFactory#getBeanNamesForType
+    
+# 2.实例化
+	# org.springframework.beans.factory.BeanFactory#getBean
+	
+# 3.注册
+	# 将创建的BeanPostProcessor实例保存到AbstractBeanFactory的beanPostProcessors中
+	# org.springframework.context.support.PostProcessorRegistrationDelegate#registerBeanPostProcessors
+	# org.springframework.beans.factory.config.ConfigurableBeanFactory#addBeanPostProcessor
+	
+# 注：可以从两个点跟踪BeanPostProcessor加载过程
+	# BeanPostProcessor实例化构造调用
+	# BeanPostProcessor注册
+		# beanPostProcessors.add(beanPostProcessor)
+```
+
+### Bean实例化过程
+
+- 解析加载的BeanDefinition，创建对应实例对象
+- 实例化后的Bean还不是成熟的SpringBean
+- 此处是针对于单例bean
+  - 单例bean由Spring容器管理，在容器创建过程中实例化
+
+```bash
+# 入口
+	# org.springframework.context.support.AbstractApplicationContext#refresh
+	# org.springframework.context.support.AbstractApplicationContext#finishBeanFactoryInitialization
+	# org.springframework.beans.factory.config.ConfigurableListableBeanFactory#preInstantiateSingletons
+	# org.springframework.beans.factory.support.AbstractBeanFactory#getBean
+	
+# Spring容器创建对象的入口
+	# org.springframework.beans.factory.support.AbstractBeanFactory#doGetBean
+	# 根据传入的beanName获取BeanDefinition
+		# org.springframework.beans.factory.support.AbstractBeanFactory#getMergedLocalBeanDefinition
+    	
+# 实例创建入口
+	# org.springframework.beans.factory.support.DefaultSingletonBeanRegistry#getSingleton
+	# 1.判断单例池是否已存在此对象
+		# singletonObjects.get(beanName)
+	# 2.调用传入getSingleton的一个ObjectFactory的lambda对象的getObject方法获取实例对象
+		# org.springframework.beans.factory.ObjectFactory#getObject
+	# 3. 实例注册到单例池
+		# org.springframework.beans.factory.support.DefaultSingletonBeanRegistry#addSingleton
+
+# 上述 2 中ObjectFactory工作内容
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#createBean
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#doCreateBean
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#createBeanInstance
+
+# 实例创建:createBeanInstance
+	# 根据配置条件使用不同方法进行实例创建
+	# 1.构造创建
+		# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#instantiateBean
+		# 获取到对应构造器对象
+			# org.springframework.beans.factory.support.SimpleInstantiationStrategy#instantiate
+			# 由class类型获取构造器
+				# java.lang.Class#getDeclaredConstructor
+		# 调用newInstance()
+			# org.springframework.beans.BeanUtils#instantiateClass
+			# java.lang.reflect.Constructor#newInstance
+	# 2.
+	
+# 注
+	# spring框架中真正操作的方法往往是 doXxx() 的形式
+	# 理解单例池看下面的循环依赖
+```
+
+#### 涉及类库
+
+##### ObjectFactory
+
+- 函数式接口
+- 一个工厂接口
+
+```java
+//org.springframework.beans.factory.ObjectFactory
+@FunctionalInterface
+public interface ObjectFactory<T> {
+	/* 调用方法获取一个对象 */
+	T getObject() throws BeansException;
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+### BeanPostProcessor前置处理
+
+#### BeanPostProcessor
+
+- 在bean实例化之后，进行后处理的顶级接口
+
+```java
+
+```
+
+
+
+
+
+
 
 ## BeanPostProcessor
 
