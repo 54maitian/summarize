@@ -1308,7 +1308,7 @@ ConfigurationClassPostProcessor实现了BeanDefinitionRegistryPostProcessor接�
 
 #### AutowiredAnnotationBeanPostProcessor后置处理
 
-
+借鉴链接：https://www.cnblogs.com/binarylei/p/12342100.html#4-postprocesspropertyvalues
 
 ##### determineCandidateConstructors处理
 
@@ -1338,5 +1338,68 @@ ConfigurationClassPostProcessor实现了BeanDefinitionRegistryPostProcessor接�
         # 如果是必须依赖的，则使用此构造器
 	# 3. 对象构建
 		# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#autowireConstructor
+```
+
+##### postProcessMergedBeanDefinition处理
+
+```bash
+# 主要就是分析Bean实例对应@Autowired注解注册的字段和方法
+# 入口
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#doCreateBean
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#applyMergedBeanDefinitionPostProcessors
+	
+	
+# 步骤
+# 1. 查询Bean实例所有@Autowired注解注册的字段和方法
+	# org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor#findAutowiringMetadata
+	# org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor#buildAutowiringMetadata
+	# 查看是否使用@Autowired注释的字段
+		# org.springframework.util.ReflectionUtils#doWithLocalFields
+		# org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor#findAutowiredAnnotation
+	# 查看是否使用@Autowired注释的方法
+		# org.springframework.util.ReflectionUtils#doWithLocalMethods
+		# org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor#findAutowiredAnnotation
+	# 都解析为对应InjectedElement保存起来
+		# List<InjectionMetadata.InjectedElement> currElements
+	# 通过获取父类的方式进行递归
+		# java.lang.Class#getSuperclass
+		# 结束条件
+			# targetClass != null && targetClass != Object.class
+	# 将最后结果封装为InjectionMetadata
+		# new InjectionMetadata(clazz, elements);
+	
+# 2. 将获取的InjectionMetadata保存到injectionMetadataCache中
+	# Map<String, InjectionMetadata> injectionMetadataCache = new ConcurrentHashMap<>(256);
+	# key为Bean实例的id
+```
+
+#### postProcessProperties处理
+
+```bash
+# 获取需要注入属性
+# 入口
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#populateBean
+		# 如果存在InstantiationAwareBeanPostProcessor类型的BeanPostProcessor
+		# 调用postProcessProperties
+		
+# 过程
+# 1. 从injectionMetadataCache中获取缓存的元数据InjectionMetadata
+	# org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor#findAutowiringMetadata
+
+# 2. 调用元数据inject方法
+	# org.springframework.beans.factory.annotation.InjectionMetadata#inject
+	# 1. 获取对应checkedElements
+		# List<InjectionMetadata.InjectedElement>
+	# 2.执行InjectedElement.inject方法
+		# org.springframework.beans.factory.annotation.InjectionMetadata.InjectedElement#inject
+
+# InjectedElement主要为两种，其inject方法处理也不同
+	# AutowiredFieldElement
+		# 1. 获取到当前AutowiredFieldElement对应Field
+		# 2. 调用beanFactory的resolveDependency方法获取目标值，主要通过目标Field字段类型匹配，从beanFactory中获取对应实例
+			# org.springframework.beans.factory.config.AutowireCapableBeanFactory#resolveDependenc
+		# 3. 调用方法设置属性值
+			# java.lang.reflect.Field#set
+	# 
 ```
 
