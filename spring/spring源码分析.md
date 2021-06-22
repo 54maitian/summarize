@@ -1310,6 +1310,19 @@ ConfigurationClassPostProcessor实现了BeanDefinitionRegistryPostProcessor接�
 
 借鉴链接：https://www.cnblogs.com/binarylei/p/12342100.html#4-postprocesspropertyvalues
 
+```bash
+# 主要处理@Autowired/@Value注解实现注入
+
+# 构造器注入
+	# determineCandidateConstructors
+# 其他
+	# postProcessMergedBeanDefinition
+	# postProcessProperties
+		# 属性注入
+			# AutowiredFieldElement
+		# AutowiredMethodElement
+```
+
 ##### determineCandidateConstructors处理
 
 ```bash
@@ -1373,7 +1386,7 @@ ConfigurationClassPostProcessor实现了BeanDefinitionRegistryPostProcessor接�
 	# key为Bean实例的id
 ```
 
-#### postProcessProperties处理
+##### postProcessProperties处理
 
 ```bash
 # 获取需要注入属性
@@ -1398,8 +1411,128 @@ ConfigurationClassPostProcessor实现了BeanDefinitionRegistryPostProcessor接�
 		# 1. 获取到当前AutowiredFieldElement对应Field
 		# 2. 调用beanFactory的resolveDependency方法获取目标值，主要通过目标Field字段类型匹配，从beanFactory中获取对应实例
 			# org.springframework.beans.factory.config.AutowireCapableBeanFactory#resolveDependenc
-		# 3. 调用方法设置属性值
+		# 3. 设置属性值
 			# java.lang.reflect.Field#set
-	# 
+	# AutowiredMethodElement
+		# 1. 获取到当前AutowiredFieldElement对应Field
+		# 2. 调用beanFactory的resolveDependency方法获取目标值，主要通过目标方法参数类型匹配，从beanFactory中获取对应实例
+			# 获取对应参数类型
+				# java.lang.reflect.Method#getParameterTypes
+			# 根据类型获取实例
+				# org.springframework.beans.factory.config.AutowireCapableBeanFactory#resolveDependenc
+		# 3. 调用方法设置属性值
+			# java.lang.reflect.Method#invoke
 ```
 
+#### CommonAnnotationBeanPostProcessor后置处理
+
+```bash
+# org.springframework.context.annotation.CommonAnnotationBeanPostProcessor
+# 主要处理一下注解
+# @Resource
+	# @Resource的作用相当于@Autowired，
+	# @Resource的作用相当于@Autowired，只不过@Autowired按byType自动注入，而@Resource默认按 byName自动注入
+	# 相关处理
+		# postProcessMergedBeanDefinition
+		# postProcessPropertyValues
+	
+# @PostConstruct/@PreDestroy
+	# 父类InitDestroyAnnotationBeanPostProcessor
+		# postProcessMergedBeanDefinition
+		# postProcessBeforeInitialization
+	
+```
+
+##### postProcessMergedBeanDefinition处理
+
+```bash
+# 实现自接口MergedBeanDefinitionPostProcessor
+	# org.springframework.beans.factory.support.MergedBeanDefinitionPostProcessor
+	
+# 触发入口
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#doCreateBean
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#applyMergedBeanDefinitionPostProcessors
+	# 获取MergedBeanDefinitionPostProcessor子类的BeanPostProcessors进行方法调用
+		# org.springframework.beans.factory.support.MergedBeanDefinitionPostProcessor#postProcessMergedBeanDefinition
+		
+# 处理
+# 1. 调用父类postProcessMergedBeanDefinition，处理@PostConstruct/@PreDestroy
+	# org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor#postProcessMergedBeanDefinition
+	# 处理
+	# 1. 获取注释了@PostConstruct/@PreDestroy的方法对应元数据
+		# org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor#findLifecycleMetadata
+		# org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor#buildLifecycleMetadata
+		# org.springframework.util.ReflectionUtils#doWithLocalMethods
+		# java.lang.reflect.AccessibleObject#isAnnotationPresent
+	# 2. 将对应的元数据放入对应缓存容器
+		# Map<Class<?>, LifecycleMetadata> lifecycleMetadataCache = new ConcurrentHashMap<>(256);
+		# LifecycleMetadata
+			# initMethods
+				# Collection<LifecycleElement>
+			# destroyMethods
+				# Collection<LifecycleElement>
+
+
+# 2. 调用findResourceMetadata方法，处理@Resource注解
+	# org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#findResourceMetadata
+	# 处理
+    # 1. 获取注释了@Resource的方法和属性对应的InjectionMetadata元数据
+        # org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#findResourceMetadata
+        # org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#buildResourceMetadata
+        # 方法
+            # org.springframework.util.ReflectionUtils#doWithLocalFields
+        # 属性
+            # org.springframework.util.ReflectionUtils#doWithLocalMethods
+    # 2. 将获取的InjectionMetadata保存到injectionMetadataCache中
+        # Map<String, InjectionMetadata> injectionMetadataCache
+```
+
+##### postProcessBeforeInitialization处理
+
+```bash
+# 实现自BeanPostProcessor接口
+# 触发入口
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#doCreateBean
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#initializeBean
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsBeforeInitialization
+	# org.springframework.beans.factory.config.BeanPostProcessor#postProcessBeforeInitialization
+
+# 处理
+# 1. 获取前面处理放入lifecycleMetadataCache缓存的元数据
+	# org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor#findLifecycleMetadata
+# 2. 调用初始化方法，对应@PostConstruct
+    # org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor.LifecycleMetadata#invokeInitMethods
+    # org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor.LifecycleElement#invoke
+    # java.lang.reflect.Method#invoke
+# 由调用可知，@PostConstruct注释方法应为无参方法
+```
+
+##### postProcessPropertyValues处理
+
+```bash
+# 实现自InstantiationAwareBeanPostProcessor接口
+	# org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor
+# 触发入口
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#populateBean
+	# 获取InstantiationAwareBeanPostProcessor子类的BeanPostProcessors
+		# org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor#postProcessProperties
+
+# 入口
+	# org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#postProcessPropertyValues
+	# org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#postProcessProperties
+	
+# 处理
+# 1. 获取postProcessMergedBeanDefinition方法处理后放入injectionMetadataCache中的InjectionMetadata
+	# org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#findResourceMetadata
+# 2. 调用inject方法进行资源注入
+	# 不同@Autowired，使用name进行对象获取，而不是使用type
+		# org.springframework.context.annotation.CommonAnnotationBeanPostProcessor.ResourceElement#getResourceToInject
+		# org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#autowireResource
+		# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#resolveBeanByName
+		# org.springframework.beans.factory.support.AbstractBeanFactory#getBean(java.lang.String, java.lang.Class<T>)
+	# 属性设置
+		# java.lang.reflect.Method#invoke
+		# 
+```
+
+##### 

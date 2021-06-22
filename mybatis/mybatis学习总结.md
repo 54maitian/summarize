@@ -2146,3 +2146,109 @@ public class JavassistProxyFactory implements org.apache.ibatis.executor.loader.
 # 代理对象进行属性获取时，则会触发包装对象的代理方法，执行对应sql获取结果进行赋值		
 ```
 
+### 事务管理
+
+```bash
+# Mybatis事务管理
+
+# Mybatis事务管理对象
+	# TransactionFactory
+		# org.apache.ibatis.transaction.TransactionFactory
+		# 负责Transaction对象的创建
+	# Transaction
+		# 包装connection连接，进行事务管理
+
+# Mybatis的管理对象分为两种，其对应的管理对象也不同
+	# 依赖于从数据源得到的连接来管理事务
+		# JdbcTransactionFactory
+		# JdbcTransaction
+	# 让容器来管理事务的整个生命周期
+		# ManagedTransactionFactory
+		# ManagedTransaction
+
+# 原生使用过程
+# 1. 解析environments标签，创建TransactionFactory
+	# 入口
+		# org.apache.ibatis.builder.xml.XMLConfigBuilder#environmentsElement
+		# org.apache.ibatis.builder.xml.XMLConfigBuilder#transactionManagerElement
+	# 过程
+		# 1. 创建TransactionFactory
+			# 1. 根据配置的type值获取对应TransactionFactory的类
+				# org.apache.ibatis.builder.BaseBuilder#resolveClass
+				# org.apache.ibatis.type.TypeAliasRegistry#resolveAlias
+					# 实质是从typeAliases(Map<String, Class<?>>) 中获取
+			# 2. 获取无参构造创建实例
+            	# java.lang.Class#getDeclaredConstructor
+            	# java.lang.reflect.Constructor#newInstance
+	
+		# 2. 解析dataSource标签获取数据源工厂DataSourceFactory
+			# org.apache.ibatis.builder.xml.XMLConfigBuilder#dataSourceElement
+			 	# 1. 根据配置的type值获取对应DataSourceFactory的类
+       				# org.apache.ibatis.builder.BaseBuilder#resolveClass
+        		# 2. 获取无参构造创建实例
+       				# java.lang.Class#getDeclaredConstructor
+        			# java.lang.reflect.Constructor#newInstance
+        			
+        # 3. 获取数据源
+        	# org.apache.ibatis.datasource.DataSourceFactory#getDataSource
+        	
+        # 4. 将获取的TransactionFactory和DataSource包装到Environment对象中，设置为Configuration属性
+
+# 2. 创建SqlSession时，封装Transaction到Executor中
+	# 入口
+		# org.apache.ibatis.session.defaults.DefaultSqlSessionFactory#openSessionFromDataSource
+	# 过程
+		# 1. 从configuration的environment中获取TransactionFactory
+			# org.apache.ibatis.session.defaults.DefaultSqlSessionFactory#getTransactionFactoryFromEnvironment
+		# 2. 创建Transaction对象
+			# org.apache.ibatis.transaction.TransactionFactory#newTransaction
+		# 3. 创建Executer时，封装Transaction到Executor中
+			# org.apache.ibatis.session.Configuration#newExecutor
+			# org.apache.ibatis.executor.BaseExecutor#BaseExecutor
+	
+# 3. executer对象执行操作时，获取connection连接，开启事务	
+	# 入口
+		# org.apache.ibatis.executor.SimpleExecutor#doUpdate
+		# org.apache.ibatis.executor.BaseExecutor#getConnection
+	# 过程
+		# 1. 从Executor中的Transaction获取connection
+        	# org.apache.ibatis.transaction.Transaction#getConnection
+        # 2. 原生JDBC操作获取connection
+        	# org.apache.ibatis.transaction.jdbc.JdbcTransaction#openConnection
+        # 3. 从DataSource中获取连接
+        	# javax.sql.DataSource#getConnection()
+        # 4. 开启事务，即设置AutoCommit自动提交为false
+        	# org.apache.ibatis.transaction.jdbc.JdbcTransaction#setDesiredAutoCommit
+        	# java.sql.Connection#setAutoCommit
+	
+# 4. 在SqlSession提交/关闭时，事务提交
+	# 入口
+		# org.apache.ibatis.session.defaults.DefaultSqlSession#commit(boolean)
+	# 过程
+		# 1. 获取executor进行提交
+			# org.apache.ibatis.executor.Executor#commit
+		# 2. 调用Transaction进行提交
+			# org.apache.ibatis.transaction.Transaction#commit
+		# 3. connection进行提交
+			# java.sql.Connection#commit
+	
+# 5. 在SqlSession调用rollback方法进行事务回滚	
+	# 入口
+		# org.apache.ibatis.session.defaults.DefaultSqlSession#rollback(boolean)
+	# 过程
+		# 1. 获取executor进行回滚
+			# org.apache.ibatis.executor.Executor#rollback
+		# 2. 获取Transaction进行回滚
+			# org.apache.ibatis.transaction.Transaction#rollback
+		# 3. connection进行回滚
+			# java.sql.Connection#rollback()
+			
+# 总结
+	# mybatis使用原生jdbc操作事务时
+		# 1. 通过解析environment子标签transactionManager标签，创建TransactionFactory，保存到Configuration中
+		# 2. 创建sqlSession时
+			# 操作创建Executor，由TransactionFactory创建Transaction对象，并保存到Executor中
+				# Transaction负责获取connection连接并对其进行管理，创建时开启事务
+		# 3. Executor执行操作时，通过Transaction对象，进行连接获取、事务提交/回滚
+```
+
