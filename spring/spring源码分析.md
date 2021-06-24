@@ -1535,4 +1535,146 @@ ConfigurationClassPostProcessor实现了BeanDefinitionRegistryPostProcessor接�
 		# 
 ```
 
-##### 
+# Spring AOP
+
+## 配置
+
+### xml配置
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	   xmlns:aop="http://www.springframework.org/schema/aop"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+    http://www.springframework.org/schema/beans/spring-beans.xsd
+http://www.springframework.org/schema/aop
+    http://www.springframework.org/schema/aop/spring-aop.xsd">
+
+	<!--开启aop注解扫描-->
+	<aop:aspectj-autoproxy/>
+
+	<!--提供advice增强功能的类-->
+	<bean id="advice" class="aop.MyAOPAdvice"/>
+
+	<!--aop配置-->
+	<aop:config>
+		<!--配置切点：表示要进行增强的点
+			id：切点id
+			expression：接收一个execution表达式，定位具体切点方法
+		-->
+		<aop:pointcut id="pc" expression="execution(* *..*.*(..))"/>
+		<!--切面配置
+			id：切面id
+			ref：切面对应advice增强类
+		-->
+		<aop:aspect id="dodo" ref="advice">
+			<!-- 前置通知：方法调用前-->
+			<aop:before method="before" pointcut-ref="pc"/>
+			<!-- 后置通知：方法正常返回-->
+			<aop:after-returning method="afterReturning" pointcut-ref="pc"/>
+			<!-- 异常通知：方法报错后，类似于catch内 -->
+			<aop:after-throwing method="afterThrowing" pointcut-ref="pc"/>
+			<!--最终通知：方法最终执行，类似于finally内-->
+			<aop:after method="after" pointcut-ref="pc"/>
+			<!--环绕通知-->
+			<aop:around method="around" pointcut-ref="pc"/>
+		</aop:aspect>
+	</aop:config>
+
+</beans>
+```
+
+### 注解配置
+
+```java
+//配置类上开启aop注解驱动
+@EnableAspectJAutoProxy
+```
+
+```java
+package aop;
+
+import org.aspectj.lang.JoinPoint;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.After;
+import org.aspectj.lang.annotation.AfterReturning;
+import org.aspectj.lang.annotation.AfterThrowing;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.annotation.Before;
+import org.aspectj.lang.annotation.Pointcut;
+import org.springframework.stereotype.Component;
+
+/**
+ * @author T00032266
+ * @DateTime 2021/5/20
+ */
+//声明一个advice增强类
+@Aspect
+@Component
+public class MyAOPAdvice {
+
+	//使用一个空方法声明切点
+	@Pointcut("execution(* * *..*.*(..))")
+	public void pointcut(){};
+
+	//前置通知
+	//jp 连接点的基本信息
+	//result 获取连接点的返回对象
+	@Before("pointcut()")
+	public void before(JoinPoint jp) {
+		System.out.println("前置通知");
+	}
+
+	//最终通知
+	@After("pointcut()")
+	public void after() {
+		System.out.println("前置通知");
+	}
+
+	//后置通知
+	@AfterReturning(value = "pointcut()",returning = "msg")
+	public void afterReturning(JoinPoint jp,Object msg) {
+		System.out.println("前置通知");
+	}
+
+	//异常通知
+	@AfterThrowing(value = "pointcut()",throwing = "ex")
+	public void afterThrowing(Throwable ex) {
+		System.out.println("前置通知");
+	}
+
+	//环绕通知
+	// pjp 对连接点的方法内容进行整体控制
+	//@Around("pointcut()")
+	public Object  around(ProceedingJoinPoint pjp) throws Throwable {
+		System.out.println("环绕before");
+		Object proceed = null;
+		try {
+			proceed = pjp.proceed();
+			System.out.println("环绕afterReturning");
+		} catch (Throwable throwable) {
+			System.out.println("环绕afterThrowing");
+			throw throwable;
+		} finally {
+			System.out.println("环绕after");
+		}
+
+		return proceed;
+	}
+}
+```
+
+## AOP实现原理
+
+### AnnotationAwareAspectJAutoProxyCreator
+
+- 继承实现了BeanPostProcessor接口
+
+```bash
+# BeanDefinition加载时机
+	# 
+```
+
+https://javadoop.com/post/spring-aop-intro
