@@ -1155,6 +1155,7 @@ ConfigurationClassPostProcessor实现了BeanDefinitionRegistryPostProcessor接�
 ```bash
 # 入口
 	# org.springframework.context.annotation.ConfigurationClassParser#processConfigurationClass
+	# org.springframework.context.annotation.ConfigurationClassParser#doProcessConfigurationClass
 
 # 1. 处理配置内部类
 	# org.springframework.context.annotation.ConfigurationClassParser#processMemberClasses
