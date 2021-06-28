@@ -816,7 +816,7 @@ public interface ObjectFactory<T> {
 			# org.springframework.beans.factory.support.DefaultSingletonBeanRegistry#addSingletonFactory
 	# 4. 对象A进行属性设置
 		# 由于对象A 依赖了 对象B，此时需要从容器中获取对象B(进入处理支线：对象B的创建过程)
-		# 1. 调用getSingleton获取对象B，当前情况是：对象A、B都保存在三级缓存singletonFactories中
+		# 1. 调用getSingleton获取对象B
 			# 重复上述步骤1/2/3/4
 		# 2. 此时对象B 引用了 对象A，进行对象B的属性设置，当前情况是：对象A、B都保存在三级缓存singletonFactories中
 			# org.springframework.beans.factory.support.AbstractBeanFactory#getBean
@@ -1538,6 +1538,10 @@ ConfigurationClassPostProcessor实现了BeanDefinitionRegistryPostProcessor接�
 
 # Spring AOP
 
+https://cloud.tencent.com/developer/article/1665081
+
+https://blog.csdn.net/qq_38826019/article/details/117605566
+
 ## 配置
 
 ### xml配置
@@ -1667,15 +1671,255 @@ public class MyAOPAdvice {
 }
 ```
 
-## AOP实现原理
+## AOP实现过程
 
-### AnnotationAwareAspectJAutoProxyCreator
+1. 解析配置，开启AOP功能，注册AnnotationAwareAspectJAutoProxyCreator类的BeanDefinition到BeanFactory中
+2. AOP切面配置解析
+   1. 解析配置，获取对应AbstractAspectJAdvice类型切面增强器
+3. AnnotationAwareAspectJAutoProxyCreator处理
 
-- 继承实现了BeanPostProcessor接口
+### 开启AOP功能
 
 ```bash
-# BeanDefinition加载时机
-	# 
+# 主要就是解析配置，注册AnnotationAwareAspectJAutoProxyCreator类的BeanDefinition到BeanFactory中
+# 后续AnnotationAwareAspectJAutoProxyCreator通过实现BeanPostProcessor接口的方法，实现切面的代理对象创建
 ```
 
-https://javadoop.com/post/spring-aop-intro
+#### 注解配置
+
+```bash
+# 1. 配置类添加@EnableAspectJAutoProxy注解
+
+# 2. @EnableAspectJAutoProxy注解使用@Import引入了AspectJAutoProxyRegistrar类
+
+# 3. AspectJAutoProxyRegistrar类实现了ImportBeanDefinitionRegistrar接口
+	# 调用其registerBeanDefinitions方法，注册AnnotationAwareAspectJAutoProxyCreator
+	# 过程
+		# 1. 调用registerBeanDefinitions方法
+			# org.springframework.context.annotation.ConfigurationClassBeanDefinitionReader#loadBeanDefinitionsFromRegistrars
+			# org.springframework.context.annotation.ImportBeanDefinitionRegistrar#registerBeanDefinitions
+		# 2. 调用工具类方法注册AnnotationAwareAspectJAutoProxyCreator
+			# org.springframework.aop.config.AopConfigUtils#registerAspectJAnnotationAutoProxyCreatorIfNecessary
+```
+
+##### 涉及类库
+
+###### EnableAspectJAutoProxy
+
+```java
+@Target(ElementType.TYPE)
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+@Import(AspectJAutoProxyRegistrar.class)
+public @interface EnableAspectJAutoProxy {
+	boolean proxyTargetClass() default false;
+	boolean exposeProxy() default false;
+}
+```
+
+###### AspectJAutoProxyRegistrar
+
+```java
+//org.springframework.context.annotation.AspectJAutoProxyRegistrar
+class AspectJAutoProxyRegistrar implements ImportBeanDefinitionRegistrar {
+    /* 继承自ImportBeanDefinitionRegistrar接口 */
+    public void registerBeanDefinitions(
+			AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
+        //调用工具类方法注册AnnotationAwareAspectJAutoProxyCreator
+        AopConfigUtils.registerAspectJAnnotationAutoProxyCreatorIfNecessary(registry);
+    }
+}
+```
+
+###### AopConfigUtils
+
+```java
+//org.springframework.aop.config.AopConfigUtils
+public abstract class AopConfigUtils {
+    
+    /* 注册InfrastructureAdvisorAutoProxyCreator类的BeanDefinition*/
+    public static BeanDefinition registerAutoProxyCreatorIfNecessary(BeanDefinitionRegistry registry, @Nullable Object source) {
+        return registerOrEscalateApcAsRequired(InfrastructureAdvisorAutoProxyCreator.class, registry, source);
+    }
+}
+```
+
+#### XML配置
+
+```bash
+# 加载xml配置资源时，解析对应标签
+# 入口
+	# org.springframework.context.support.AbstractApplicationContext#obtainFreshBeanFactory
+	# org.springframework.context.support.AbstractXmlApplicationContext#loadBeanDefinitions
+	# org.springframework.beans.factory.xml.DefaultBeanDefinitionDocumentReader#parseBeanDefinitions
+
+# 解析对应aop配置标签
+	# aop:aspectj-autoproxy
+	# aop:config
+	# advice增强功能的类
+		# 普通bean标签
+			
+# aop标签解析入口
+	# xml标签解析入口
+		# org.springframework.context.support.AbstractApplicationContext#obtainFreshBeanFactory
+        # org.springframework.context.support.AbstractXmlApplicationContext#loadBeanDefinitions
+        # org.springframework.beans.factory.xml.DefaultBeanDefinitionDocumentReader#parseBeanDefinitions 
+	# 通过isDefaultNamespace方法判断，区分namespace：beans和其他标签处理
+		# String BEANS_NAMESPACE_URI = "http://www.springframework.org/schema/beans";
+		# org.springframework.beans.factory.xml.BeanDefinitionParserDelegate#isDefaultNamespace
+	# namespace处理方法
+		# beans
+			# org.springframework.beans.factory.xml.DefaultBeanDefinitionDocumentReader#parseDefaultElement
+		# 其他
+			# org.springframework.beans.factory.xml.BeanDefinitionParserDelegate#parseCustomElement
+			
+# 其他namespace标签处理过程
+# 1. 获取element对应namespaceURI
+	# org.springframework.beans.factory.xml.BeanDefinitionParserDelegate#getNamespaceURI
+	
+# 2. 根据namespaceURI获取对应NamespaceHandler
+	# org.springframework.beans.factory.xml.NamespaceHandlerResolver#resolve
+	# 对应aop
+		# org.springframework.aop.config.AopNamespaceHandler
+		
+# 3. AopNamespaceHandler进行处理
+	# org.springframework.beans.factory.xml.NamespaceHandlerSupport#parse	
+	
+# 4. 根据要处理的element，获取其对应BeanDefinitionParser
+	# org.springframework.beans.factory.xml.NamespaceHandlerSupport#findParserForElement
+	# 不同标签对应parser
+        # config
+            # org.springframework.aop.config.ConfigBeanDefinitionParser
+        # aspectj-autoproxy
+            # org.springframework.aop.config.AspectJAutoProxyBeanDefinitionParser
+
+
+# AspectJAutoProxyBeanDefinitionParser处理
+	# 调用工具类方法注册AnnotationAwareAspectJAutoProxyCreator
+		# org.springframework.aop.config.AopNamespaceUtils#registerAspectJAnnotationAutoProxyCreatorIfNecessary
+		# org.springframework.aop.config.AopConfigUtils#registerAspectJAnnotationAutoProxyCreatorIfNecessary
+		# org.springframework.aop.config.AopConfigUtils#registerOrEscalateApcAsRequired
+		# org.springframework.beans.factory.support.BeanDefinitionRegistry#registerBeanDefinition
+	
+# ConfigBeanDefinitionParser处理
+	# 解析不同子标签
+		# pointcut
+			# org.springframework.aop.config.ConfigBeanDefinitionParser#parsePointcut
+		# advisor
+			# org.springframework.aop.config.ConfigBeanDefinitionParser#parseAdvisor
+		# aspect
+			# org.springframework.aop.config.ConfigBeanDefinitionParser#parseAspect
+			# 解析为对应AbstractAspectJAdvice切面增强器
+				# org.springframework.aop.aspectj.AbstractAspectJAdvice
+            	# aop:before
+            		# org.springframework.aop.aspectj.AspectJMethodBeforeAdvice
+            	# aop:after
+            		# org.springframework.aop.aspectj.AspectJAfterAdvice
+            	# aop:after-returning
+            		# org.springframework.aop.aspectj.AspectJAfterReturningAdvice
+            	# aop:after-throwing
+               		# org.springframework.aop.aspectj.AspectJAfterThrowingAdvice
+               	# aop:around
+               		# org.springframework.aop.aspectj.AspectJAroundAdvice
+               		
+	# 方法中注册对应BeanDefinition到BeanFactory
+		# org.springframework.beans.factory.xml.XmlReaderContext#registerWithGeneratedName
+```
+
+### AnnotationAwareAspectJAutoProxyCreator处理
+
+- 抽象父类AbstractAutoProxyCreator，实现了
+  - InstantiationAwareBeanPostProcessor接口的postProcessBeforeInstantiation
+  - BeanPostProcessor的postProcessAfterInitialization
+
+#### postProcessBeforeInstantiation前置处理
+
+```bash
+# 入口
+	# org.springframework.beans.factory.support.AbstractBeanFactory#createBean
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#resolveBeforeInstantiation
+	# org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsBeforeInstantiation
+	# org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor#postProcessBeforeInstantiation
+
+
+# 由上述分析可知，对于注解配置和xml配置是不同的
+	# 注解配置
+		# 前面分析过程仅仅是通过@EnableAspectJAutoProxy注册了AnnotationAwareAspectJAutoProxyCreator
+	# xml配置
+		# 通过解析aop:aspectj-autoproxy标签，注册了AnnotationAwareAspectJAutoProxyCreator
+		# 通过解析aop:config，注册了对应AbstractAspectJAdvice的切面增强器
+		
+# postProcessBeforeInitialization处理		
+	# 入口
+        # org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#postProcessBeforeInstantiation
+    # 过程
+    	# 1.判断是否基础设施类
+    		# org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#isInfrastructureClass
+    		# 1. 主要判断是否以下类型
+    			# org.aopalliance.aop.Advice
+    			# org.springframework.aop.Advisor
+				# org.springframework.aop.framework.AopInfrastructureBean
+			# 2. 判断是否有@Aspect注解
+				# org.springframework.aop.aspectj.annotation.AbstractAspectJAdvisorFactory#hasAspectAnnotation
+			# 结果判断
+				# 是，保存false
+					# this.advisedBeans.put(cacheKey, Boolean.FALSE);
+				# 不是，继续shouldSkip判断
+		# 2. 是否应该跳过判断
+			# org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#shouldSkip
+			# 1. 先获取所有Advisor
+				# org.springframework.aop.framework.autoproxy.AbstractAdvisorAutoProxyCreator#findCandidateAdvisors
+				# 1. 如果是xml配置，则super.findCandidateAdvisors()会获取前面解析的Advisor
+					# org.springframework.aop.framework.autoproxy.AbstractAdvisorAutoProxyCreator#findCandidateAdvisors
+	        	# 2. 如果是注解配置，则super.findCandidateAdvisors()获取不到，调用buildAspectJAdvisors进行解析获取
+	        		# org.springframework.aop.aspectj.annotation.BeanFactoryAspectJAdvisorsBuilder#buildAspectJAdvisors
+		
+# 所以对于注解配置，postProcessBeforeInitialization需要注册对应AbstractAspectJAdvice的切面增强器
+    # 入口
+        # org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#postProcessBeforeInstantiation
+        # org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#shouldSkip
+        # org.springframework.aop.framework.autoproxy.AbstractAdvisorAutoProxyCreator#findCandidateAdvisors
+        # org.springframework.aop.aspectj.annotation.BeanFactoryAspectJAdvisorsBuilder#buildAspectJAdvisors
+    # 过程
+    	# 1. 获取当前所有注册的Object类型的BeanNames
+    		# org.springframework.beans.factory.BeanFactoryUtils#beanNamesForTypeIncludingAncestors
+    		# org.springframework.beans.factory.support.DefaultListableBeanFactory#doGetBeanNamesForType
+    	# 2. 获取其中是Advice的Bean
+    		# 判断方法
+    			# org.springframework.aop.aspectj.annotation.AspectJAdvisorFactory#isAspect
+    			# org.springframework.aop.aspectj.annotation.AbstractAspectJAdvisorFactory#hasAspectAnnotation
+    			# org.springframework.core.annotation.AnnotationUtils#findAnnotation
+    	# 3. 解析对应Bean获取Advisor
+    		# org.springframework.aop.aspectj.annotation.AspectJAdvisorFactory#getAdvisors
+    		
+# @Advice注解类解析过程
+# 1. 获取切面方法，不包括@Pointcut注释方法
+	# org.springframework.aop.aspectj.annotation.ReflectiveAspectJAdvisorFactory#getAdvisorMethods
+	
+# 2. 解析方法，获取对应Advisor
+	# org.springframework.aop.aspectj.annotation.ReflectiveAspectJAdvisorFactory#getAdvisor
+	
+# 3. 将创建的Advisor缓存
+	# this.advisorsCache.put(beanName, classAdvisors);
+```
+
+### postProcessAfterInitialization后置处理
+
+```bash
+# 此处就是进行代理的入口
+	# org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#postProcessAfterInitialization
+	# org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#wrapIfNecessary
+	
+# 先是一系列判断，针对无需进行aop代理的对象跳过
+# 对于需要进行代理的对象，进行代理
+# 过程
+	# 1. 获取获取增强器
+		# org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#getAdvicesAndAdvisorsForBean
+	# 2. 创建代理对象返回
+		# org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#createProxy
+```
+
+
+
+
+
