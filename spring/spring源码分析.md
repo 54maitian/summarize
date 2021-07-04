@@ -730,10 +730,16 @@ bean配置过程中，对于构造参数constructor-arg，是对象实例化时�
 			# 主要控制代码在DefaultSingletonBeanRegistry中
 	# singletonObjects
 		# 就是我们常说的单例池
+		# 放置完整的SpringBean：已经走完spring的生命周期
 	# earlySingletonObjects
 		# 二级缓存
+		# 放置早期暴露的SpringBean，没有走完整个生命周期
+		# 早期暴露的目的：如果一个Bean被多个Bean依赖，则无需再次由三级缓存创建代理对象并保存到二级缓存中，而是直接可以从二级缓存中获取
+		# 不取消二级缓存的目的：由于一级缓存都是保存完整的SpringBean，如果取消二级缓存，将提前暴露的不完整的SpringBean也保存在此，则导致一级缓存属性不唯一，违背单一原则
 	# singletonFactories
 		# 三级缓存
+		# 单例工厂对象
+		# 如果Bean需要进行AOP代理，则需要通过ObjectFactory来创建代理对象返回
 ```
 
 ###### DefaultSingletonBeanRegistry
@@ -2143,7 +2149,7 @@ public abstract class AopConfigUtils {
     </bean>
 
     <bean id="sessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean">
-        <property name="mapperLocations" value="classpath:com.learn/mapper/*Mapper.xml"/>
+        <property name="mapperLocations" value="classpath:com/learn/mapper/*Mapper.xml"/>
         <property name="dataSource" ref="dataSource"/>
     </bean>
 
