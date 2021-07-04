@@ -1321,7 +1321,8 @@ ConfigurationClassPostProcessor实现了BeanDefinitionRegistryPostProcessor接�
 	# postProcessProperties
 		# 属性注入
 			# AutowiredFieldElement
-		# AutowiredMethodElement
+		# 方法注入
+			# AutowiredMethodElement
 ```
 
 ##### determineCandidateConstructors处理
@@ -1541,6 +1542,190 @@ ConfigurationClassPostProcessor实现了BeanDefinitionRegistryPostProcessor接�
 https://cloud.tencent.com/developer/article/1665081
 
 https://blog.csdn.net/qq_38826019/article/details/117605566
+
+## 代理实现
+
+### 静态代理
+
+- 代理对象实现目标对象相同接口
+- 代理对象持有目标对象引用，在接口方法中实现增强
+
+#### 示例
+
+- 接口
+
+  ```java
+  public interface IDoSomething {
+      public int doSometing(int num);
+  }
+  ```
+
+- 被代理类的实现
+
+  ```java
+  public class Sing implements IDoSomething {
+      @Override
+      public int doSometing(int num) {
+          System.out.println("Sing a song");
+          return num;
+      }
+  }
+  ```
+
+- 代理类的实现
+
+  ```java
+  public class SingProxy implements IDoSomething{
+  	//目标对象引用持有
+      private IDoSomething sing = new Sing();
+  
+      @Override
+      public int doSometing(int num) {
+          System.out.println("Befor singing ");
+          int result = sing.doSometing(num);
+          System.out.println("After singing");
+          return result;
+      }
+  }
+  ```
+
+### JDK动态代理
+
+- 目标对象必须实现接口
+- 定义InvocationHandler实现类
+- 通过Proxy.newProxyInstance方法创建代理对象
+
+#### 示例
+
+- 接口
+
+  ```java
+  public interface IDoSomething {
+      void doSometing();
+  }
+  ```
+
+- 被代理类的实现
+
+  ```java
+  public class Sing implements IDoSomething {
+      
+  	@Override
+      public void doSometing() {
+          System.out.println("Sing a song");
+      }
+  
+      public void doOtherThing() {
+          System.out.println("do other thing");
+      }
+  }
+  ```
+
+- 自定义InvocationHandler
+
+  ```java
+  public class MyInvoicationHandler implements InvocationHandler {
+      
+      public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+          System.out.println("代理前置处理 ");
+          Object invoke = method.invoke(proxy, args);
+          System.out.println("代理后置处理 ");
+          return invoke;
+      }
+  }
+  ```
+
+- 测试代理
+
+  ```java
+  //需注意，由于代理对象是实现接口代理，所以对于目标对象的其他非目标接口方法，无法进行代理
+  //也就是说，创建代理对象时传入的代理接口的方法才会被代理
+  public static void main(String[] args) {
+      IDoSomething sing = (IDoSomething)Proxy.newProxyInstance(MyProxyTest.class.getClassLoader(), //类加载其
+                                                               new Class[]{IDoSomething.class}, //代理对象实现的接口数组
+                                                               new MyInvoicationHandler());    //对应的InvoicationHandler
+      sing.doSometing();  //执行代理方法
+  }
+  ```
+
+### Cglib代理
+
+- 目标对象无需实现接口
+- 实现MethodInterceptor接口
+- 使用Enhancer.create方法创建代理对象
+- 不是JDK自带，需要添加依赖
+
+#### 依赖
+
+```xml
+<dependency>
+    <groupId>cglib</groupId>
+    <artifactId>cglib</artifactId>
+    <version>3.2.5</version>
+</dependency>
+```
+
+#### 示例
+
+- 被代理类
+
+  ```java
+  public class Sing {
+  
+      public void doSometing() {
+          System.out.println("Sing a song");
+      }
+  
+      public void doOtherThing() {
+          System.out.println("do other thing");
+      }
+  }
+  ```
+
+- 自定义MethodInterceptor
+
+  ```java
+  public class MyMethodInterceptor implements MethodInterceptor {
+  
+      /**
+       *
+       * @param obj 表示要进行增强的对象
+       * @param method 表示拦截的方法
+       * @param args 数组表示参数列表，基本数据类型需要传入其包装类型，如int-->Integer、long-Long、double-->Double
+       * @param proxy 表示对方法的代理，invokeSuper方法表示对被代理对象方法的调用
+       */
+      public Object intercept(Object obj, Method method, Object[] args, MethodProxy proxy) throws Throwable {
+          System.out.println("代理前置处理 ");
+          // 注意这里是调用invokeSuper而不是invoke，否则死循环;
+          // proxy.invokeSuper执行的是原始类的方法;
+          // method.invoke执行的是子类的方法;
+          Object result = proxy.invokeSuper(obj, args);
+          System.out.println("代理后置处理 ");
+          return result;
+      }
+  }
+  ```
+
+- 测试代理
+
+  ```java
+  public static void main(String[] args) {
+      // 通过CGLIB动态代理获取代理对象的过程
+      // 创建Enhancer对象，类似于JDK动态代理的Proxy类
+      Enhancer enhancer = new Enhancer();
+      // 设置目标类的字节码文件
+      enhancer.setSuperclass(Sing.class);
+      // 设置回调函数
+      enhancer.setCallback(new MyMethodInterceptor());
+      // create方法正式创建代理类
+      Sing sing = (Sing) enhancer.create();
+      // 调用代理类的具体业务方法
+      sing.doSometing();
+      sing.doOtherThing();
+  }
+  ```
+
+  
 
 ## 配置
 
@@ -1919,7 +2104,292 @@ public abstract class AopConfigUtils {
 		# org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#createProxy
 ```
 
+# Spring声明式事务
 
+使用@Transactional注解，即可声明事务控制，无需手动进行编程式事务控制
+
+## 配置
+
+### xml配置
+
+```xml
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xmlns:tx="http://www.springframework.org/schema/tx"
+       xsi:schemaLocation="
+        http://www.springframework.org/schema/beans
+        http://www.springframework.org/schema/beans/spring-beans-3.1.xsd
+        http://www.springframework.org/schema/context
+        http://www.springframework.org/schema/context/spring-context-3.1.xsd
+        http://www.springframework.org/schema/tx
+        http://www.springframework.org/schema/tx/spring-tx-3.1.xsd">
+
+
+    <!--<tx:annotation-driven transaction-manager="transactionManager" ></tx:annotation-driven>-->
+    <bean id="transactionManager" class="org.springframework.jdbc.datasource.DataSourceTransactionManager">
+        <property name="dataSource" ref="dataSource"/>
+    </bean>
+
+
+    <!--加载jdbc属性配置-->
+    <context:property-placeholder location="classpath*:/jdbc.properties"/>
+
+    <bean id="dataSource" class="com.alibaba.druid.pool.DruidDataSource">
+        <property name="driverClassName" value="${database.driver}"/>
+        <property name="url" value="${database.url}"/>
+        <property name="username" value="${database.username}"/>
+        <property name="password" value="${database.password}"/>
+    </bean>
+
+    <bean id="sessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean">
+        <property name="mapperLocations" value="classpath:com.learn/mapper/*Mapper.xml"/>
+        <property name="dataSource" ref="dataSource"/>
+    </bean>
+
+    <bean class="org.mybatis.spring.mapper.MapperScannerConfigurer">
+        <property name="basePackage" value="com.learn.mapper"/>
+        <property name="sqlSessionFactoryBeanName" value="sessionFactory"/>
+    </bean>
+
+</beans>
+```
+
+### 配置类
+
+```java
+@Configuration
+@ImportResource("classpath*:applicationContext.xml")
+@EnableTransactionManagement
+@ComponentScan
+public class MyConfiguration {
+    
+}
+```
+
+## 分析
+
+### @EnableTransactionManagement
+
+- @EnableTransactionManagement注解声明开启事务控制
+
+- 主要就是通过@Import注解引入TransactionManagementConfigurationSelector
+
+```java
+//org.springframework.transaction.annotation.EnableTransactionManagement
+@Import(TransactionManagementConfigurationSelector.class)
+public @interface EnableTransactionManagement {}
+```
+
+我们继续查看TransactionManagementConfigurationSelector
+
+### TransactionManagementConfigurationSelector
+
+- 实现ImportSelector接口
+  - org.springframework.context.annotation.ImportSelector
+
+```java
+//org.springframework.transaction.annotation.TransactionManagementConfigurationSelector
+public class TransactionManagementConfigurationSelector extends AdviceModeImportSelector<EnableTransactionManagement> {
+
+	protected String[] selectImports(AdviceMode adviceMode) {
+		switch (adviceMode) {
+			case PROXY:
+                //注册AutoProxyRegistrar、ProxyTransactionManagementConfiguration
+				return new String[] {AutoProxyRegistrar.class.getName(),
+						ProxyTransactionManagementConfiguration.class.getName()};
+			case ASPECTJ:
+				return new String[] {determineTransactionAspectClass()};
+			default:
+				return null;
+		}
+	}
+}
+```
+
+查看TransactionManagementConfigurationSelector类，发现通过selectImports注册了以下两个类
+
+- AutoProxyRegistrar
+- ProxyTransactionManagementConfiguration
+
+下面分析ProxyTransactionManagementConfiguration
+
+### ProxyTransactionManagementConfiguration
+
+- 是一个配置类
+
+```java
+//org.springframework.transaction.annotation.ProxyTransactionManagementConfiguration
+@Configuration
+public class ProxyTransactionManagementConfiguration extends AbstractTransactionManagementConfiguration {
+	
+    /* 注册BeanFactoryTransactionAttributeSourceAdvisor */
+	@Bean(name = TransactionManagementConfigUtils.TRANSACTION_ADVISOR_BEAN_NAME)
+	@Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+	public BeanFactoryTransactionAttributeSourceAdvisor transactionAdvisor() {
+        //创建BeanFactoryTransactionAttributeSourceAdvisor
+		BeanFactoryTransactionAttributeSourceAdvisor advisor = new BeanFactoryTransactionAttributeSourceAdvisor();
+        //设置TransactionAttributeSource
+		advisor.setTransactionAttributeSource(transactionAttributeSource());
+        //设置TransactionInterceptor
+		advisor.setAdvice(transactionInterceptor());
+		return advisor;
+	}
+	
+    /* 注册TransactionAttributeSource */
+	@BeanTransactionAttributeSource
+	@Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+	public TransactionAttributeSource transactionAttributeSource() {
+        //创建AnnotationTransactionAttributeSource
+		return new AnnotationTransactionAttributeSource();
+	}
+	
+    /* 注册TransactionInterceptor */
+	@Bean
+	@Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+	public TransactionInterceptor transactionInterceptor() {
+        //创建TransactionInterceptor
+		TransactionInterceptor interceptor = new TransactionInterceptor();
+        //设置TransactionAttributeSource
+		interceptor.setTransactionAttributeSource(transactionAttributeSource());
+		return interceptor;
+	}
+}
+```
+
+继续分析AutoProxyRegistrar
+
+### AutoProxyRegistrar
+
+AutoProxyRegistrar主要就是通过实现ImportBeanDefinitionRegistrar的registerBeanDefinitions，在容器创建时注册InfrastructureAdvisorAutoProxyCreator
+
+- 实现ImportBeanDefinitionRegistrar接口
+
+```java
+//org.springframework.context.annotation.AutoProxyRegistrar
+public class AutoProxyRegistrar implements ImportBeanDefinitionRegistrar {
+    
+    /*实现自ImportBeanDefinitionRegistrar*/
+    public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
+        //其他处理...
+        //通过AopConfigUtils工具类注册InfrastructureAdvisorAutoProxyCreator
+        AopConfigUtils.registerAutoProxyCreatorIfNecessary(registry);
+    }
+}
+```
+
+由AutoProxyRegistrar注册了InfrastructureAdvisorAutoProxyCreator，此时分析
+
+### InfrastructureAdvisorAutoProxyCreator
+
+- 实现BeanPostProcessor接口
+  - 通过postProcessAfterInitialization后置处理方法，实现事务代理对象创建
+
+```java
+//org.springframework.aop.framework.autoproxy.InfrastructureAdvisorAutoProxyCreator
+public class InfrastructureAdvisorAutoProxyCreator extends AbstractAdvisorAutoProxyCreator {
+    
+    /* 继承自AbstractAutoProxyCreator抽象父类 */
+	public Object postProcessAfterInitialization(@Nullable Object bean, String beanName) {
+		if (bean != null) {
+			Object cacheKey = getCacheKey(bean.getClass(), beanName);
+			if (this.earlyProxyReferences.remove(cacheKey) != bean) {
+                //代理包装必要对象
+				return wrapIfNecessary(bean, beanName, cacheKey);
+			}
+		}
+		return bean;
+	}
+    
+    /* 包装处理 */
+    protected Object wrapIfNecessary(Object bean, String beanName, Object cacheKey) {
+		// 获取目标对象对应Advice，对于Spring声明式事务，即BeanFactoryTransactionAttributeSourceAdvisor
+		Object[] specificInterceptors = getAdvicesAndAdvisorsForBean(bean.getClass(), beanName, null);
+		if (specificInterceptors != DO_NOT_PROXY) {
+			this.advisedBeans.put(cacheKey, Boolean.TRUE);
+            //创建对应代理对象，实现声明式事务控制
+			Object proxy = createProxy(
+					bean.getClass(), beanName, specificInterceptors, new SingletonTargetSource(bean));
+			this.proxyTypes.put(cacheKey, proxy.getClass());
+			return proxy;
+		}
+
+		this.advisedBeans.put(cacheKey, Boolean.FALSE);
+		return bean;
+	}
+}
+```
+
+此时我们需要分析：
+
+- 由目标类获取对应Advice
+  - getAdvicesAndAdvisorsForBean
+- 代理对象创建
+  - createProxy
+
+#### getAdvicesAndAdvisorsForBean方法分析
+
+```bash
+# org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#getAdvicesAndAdvisorsForBean
+# 调用路径
+	# org.springframework.aop.framework.autoproxy.AbstractAdvisorAutoProxyCreator#findEligibleAdvisors
+	# 过程
+		# 1. 获取当前容器对应Advice列表
+			# org.springframework.aop.framework.autoproxy.AbstractAdvisorAutoProxyCreator#findCandidateAdvisors
+		# 2. 获取当前类对象使用的Advice
+			# org.springframework.aop.framework.autoproxy.AbstractAdvisorAutoProxyCreator#findAdvisorsThatCanApply
+			# org.springframework.aop.support.AopUtils#canApply
+			
+# canApply方法分析，其实就是确认BeanFactoryTransactionAttributeSourceAdvisor是否适用
+	# 1. 获取当前Advisor对应切入点Pointcut
+		# org.springframework.aop.PointcutAdvisor#getPointcut
+		# BeanFactoryTransactionAttributeSourceAdvisor有创建对应TransactionAttributeSourcePointcut
+		
+	# 2. 获取Pointcut对应的MethodMatcher
+		# org.springframework.aop.Pointcut#getMethodMatcher
+		# 而TransactionAttributeSourcePointcut自身MethodMatcher接口，所以得到自己
+	
+	# 3. 获取目标类对应方法，进行遍历
+		# org.springframework.util.ReflectionUtils#getAllDeclaredMethods
+		
+	# 4. 调用methodMatcher的matches方法判断是否有目标方法适用
+		# org.springframework.transaction.interceptor.TransactionAttributeSourcePointcut#matches
+		# 实质是获取TransactionAttributeSource，调用getTransactionAttribute方法进行判断
+	
+	# 5. TransactionAttributeSource.getTransactionAttribute处理
+		# 调用链
+			# org.springframework.transaction.interceptor.AbstractFallbackTransactionAttributeSource#getTransactionAttribute
+			# org.springframework.transaction.interceptor.AbstractFallbackTransactionAttributeSource#computeTransactionAttribute
+			# org.springframework.transaction.interceptor.AbstractFallbackTransactionAttributeSource#findTransactionAttribute
+			# org.springframework.transaction.annotation.AnnotationTransactionAttributeSource#determineTransactionAttribute
+		# 过程
+            # 1. 获取对应TransactionAnnotationParser
+                # SpringTransactionAnnotationParser
+            # 2. 调用parseTransactionAnnotation方法进行处理
+            	# org.springframework.transaction.annotation.SpringTransactionAnnotationParser#parseTransactionAnnotation
+			
+	# 6. SpringTransactionAnnotationParser		
+		# 首选判断类的方法上是否含有@Transactional注解
+		# 如果所有的方法都不含有@Transactional注解，那么判断当前类是否含有@Transactional注解
+		# 如果类或者类的某个方法含有@Transactional注解，那么事务属性对象就不为空，则说明次切面可以解析当前bean
+```
+
+#### createProxy方法分析
+
+```bash
+# org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#createProxy
+# 过程
+	# 1. 创建一个ProxyFactory，设置属性
+		# org.springframework.aop.framework.ProxyFactory
+		# 属性设置
+			# advisors
+				# Advice列表
+			# aopProxyFactory
+				# AopProxy代理对象工厂：DefaultAopProxyFactory
+	# 2. 实质就是通过Cglib创建代理对象
+		# org.springframework.aop.framework.CglibAopProxy#getProxy
+		# 使用的增强MethodInterceptor就是TransactionInterceptor(ProxyTransactionManagementConfiguration注入)
+```
 
 
 

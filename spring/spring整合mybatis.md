@@ -289,7 +289,172 @@ public class SqlSessionTemplate implements SqlSession, DisposableBean {
 # mapper对象获取
 	# SqlSessionTemplate调用getMapper是，传入的SqlSession是其本身
 	# 由于Mybatis代理方式，最终调用SqlSession进行方法执行
+		# 由于传入的SqlSession为SqlSessionTemplate自身，所以调用SqlSessionTemplate对应方法
 	# SqlSessionTemplate调用方法时，都是借用sqlSessionProxy代理对象执行
 		# 代理对象执行方法时，通过getSqlSession获取对应SqlSession进行结果获取
 ```
 
+# Spring声明式事务
+
+## 配置
+
+```bash
+# 配置类
+	# 使用@EnableTransactionManagement注解表示开启事务支持
+
+# 使用
+	# 方法上添加@Transactional注解
+	# 注意：此方法对应对象需为spring管理对象
+```
+
+## 分析
+
+```bash
+# @EnableTransactionManagement
+	# 使用@Import注解引入类TransactionManagementConfigurationSelector
+```
+
+#### TransactionManagementConfigurationSelector
+
+- org.springframework.transaction.annotation.TransactionManagementConfigurationSelector
+
+- 实现ImportSelector接口
+  - org.springframework.context.annotation.ImportSelector
+- 通过selectImports方法注册
+  - AutoProxyRegistrar
+  - ProxyTransactionManagementConfiguration
+
+### 涉及类库
+
+#### AutoProxyRegistrar
+
+- 实现ImportBeanDefinitionRegistrar接口
+
+```java
+//org.springframework.context.annotation.AutoProxyRegistrar
+public class AutoProxyRegistrar implements ImportBeanDefinitionRegistrar { 
+    
+    /* 实现ImportBeanDefinitionRegistrar接口方法，注册BeanDefinition*/
+	public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
+        //调用方法注册InfrastructureAdvisorAutoProxyCreator类对应BeanDefinition
+        AopConfigUtils.registerAutoProxyCreatorIfNecessary(registry);
+    }
+}
+```
+
+#### InfrastructureAdvisorAutoProxyCreator
+
+- 实现BeanPostProcessor接口
+
+```java
+//org.springframework.aop.framework.autoproxy.InfrastructureAdvisorAutoProxyCreator
+public class InfrastructureAdvisorAutoProxyCreator extends AbstractAdvisorAutoProxyCreator {
+	
+    /* 实现自BeanPostProcessor接口，进行初始化后处理，继承自AbstractAdvisorAutoProxyCreator抽象父类 */
+    public Object postProcessAfterInitialization(@Nullable Object bean, String beanName) {
+        //...
+        //必要时创建代理对象返回
+        return wrapIfNecessary(bean, beanName, cacheKey);
+    }
+    
+    /* 必要时创建代理对象返回 */
+    protected Object wrapIfNecessary(Object bean, String beanName, Object cacheKey) {
+        // 获取Advice，spring声明式事务处理Advice：BeanFactoryTransactionAttributeSourceAdvisor
+		Object[] specificInterceptors = getAdvicesAndAdvisorsForBean(bean.getClass(), beanName, null);
+		if (specificInterceptors != DO_NOT_PROXY) {
+			this.advisedBeans.put(cacheKey, Boolean.TRUE);
+            //使用Aop代理，创建cglib代理对象
+			Object proxy = createProxy(
+					bean.getClass(), beanName, specificInterceptors, new SingletonTargetSource(bean));
+			this.proxyTypes.put(cacheKey, proxy.getClass());
+			return proxy;
+		}
+
+		this.advisedBeans.put(cacheKey, Boolean.FALSE);
+		return bean;
+    }
+}
+```
+
+#### ProxyTransactionManagementConfiguration
+
+```java
+//org.springframework.transaction.annotation.ProxyTransactionManagementConfiguration
+@Configuration
+public class ProxyTransactionManagementConfiguration extends AbstractTransactionManagementConfiguration {
+
+    @Bean(name = TransactionManagementConfigUtils.TRANSACTION_ADVISOR_BEAN_NAME)
+    @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+    public BeanFactoryTransactionAttributeSourceAdvisor transactionAdvisor() {
+        BeanFactoryTransactionAttributeSourceAdvisor advisor = new BeanFactoryTransactionAttributeSourceAdvisor();
+        advisor.setTransactionAttributeSource(transactionAttributeSource());
+        advisor.setAdvice(transactionInterceptor());
+        if (this.enableTx != null) {
+            advisor.setOrder(this.enableTx.<Integer>getNumber("order"));
+        }
+        return advisor;
+    }
+
+    @Bean
+    @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+    public TransactionAttributeSource transactionAttributeSource() {
+        return new AnnotationTransactionAttributeSource();
+    }
+
+    @Bean
+    @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+    public TransactionInterceptor transactionInterceptor() {
+        TransactionInterceptor interceptor = new TransactionInterceptor();
+        interceptor.setTransactionAttributeSource(transactionAttributeSource());
+        if (this.txManager != null) {
+            interceptor.setTransactionManager(this.txManager);
+        }
+        return interceptor;
+    }
+
+}
+```
+
+### 过程分析
+
+```bash
+# 1. 由TransactionManagementConfigurationSelector注册两个类
+    # AutoProxyRegistrar
+    # ProxyTransactionManagementConfiguration
+        
+# 2. AutoProxyRegistrar实现ImportBeanDefinitionRegistrar接口
+	# 通过调用registerBeanDefinitions方法，注册InfrastructureAdvisorAutoProxyCreator类BeanDefinition
+	
+# 3.ProxyTransactionManagementConfiguration是一个配置类
+	# 通过@Bean注解，注册BeanDefinition
+		# BeanFactoryTransactionAttributeSourceAdvisor
+		# TransactionAttributeSource
+		# TransactionInterceptor
+		
+# 4. InfrastructureAdvisorAutoProxyCreator实现BeanPostProcessor接口
+	# 调用postProcessAfterInitialization方法
+		# 内部调用wrapIfNecessary方法
+    # 过程
+    	# 1. 获取对应Advice
+    		# getAdvicesAndAdvisorsForBean
+    		# 为ProxyTransactionManagementConfiguration注册的BeanFactoryTransactionAttributeSourceAdvisor
+    	# 2. 通过Advice，创建类对应Cglib代理对象
+
+# 判断类匹配BeanFactoryTransactionAttributeSourceAdvisor这个Advice
+	# 入口
+		# org.springframework.aop.framework.autoproxy.AbstractAutoProxyCreator#getAdvicesAndAdvisorsForBean
+	# 分析
+		# 1. BeanFactoryTransactionAttributeSourceAdvisor通过匿名内部类创建TransactionAttributeSourcePointcut
+			# 设置transactionAttributeSource为TransactionAttributeSource
+		# 2. getAdvicesAndAdvisorsForBean方法内部调用canApply方法判断Advice是否适配类
+			# org.springframework.aop.support.AopUtils#canApply
+		# 3. 获取TransactionAttributeSourcePointcut对应MethodMatcher
+			# org.springframework.aop.Pointcut#getMethodMatcher
+			# 由于TransactionAttributeSourcePointcut自身实现了MethodMatcher接口
+				# 获取的MethodMatcher为其自身
+		# 4. 遍历类的方法，调用MethodMatcher.matches方法判断
+			# 获取TransactionAttributeSource进行判断，调用getTransactionAttribute方法
+				# org.springframework.transaction.interceptor.TransactionAttributeSource#getTransactionAttribute
+			# 通过SpringTransactionAnnotationParser的parseTransactionAnnotation方法判断
+				# 如果类方法有@Transactional注解，则适配
+```
