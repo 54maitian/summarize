@@ -2112,6 +2112,8 @@ public abstract class AopConfigUtils {
 
 # Spring声明式事务
 
+https://cloud.tencent.com/developer/article/1620256
+
 使用@Transactional注解，即可声明事务控制，无需手动进行编程式事务控制
 
 ## 配置

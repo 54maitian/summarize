@@ -458,3 +458,4 @@ public class ProxyTransactionManagementConfiguration extends AbstractTransaction
 			# 通过SpringTransactionAnnotationParser的parseTransactionAnnotation方法判断
 				# 如果类方法有@Transactional注解，则适配
 ```
+#### BeanFactoryTransactionAttributeSourceAdvisor代理处理
