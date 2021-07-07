@@ -2175,7 +2175,7 @@ public class MyConfiguration {
 }
 ```
 
-## 分析
+## 代理分析
 
 ### @EnableTransactionManagement
 
@@ -2398,6 +2398,283 @@ public class InfrastructureAdvisorAutoProxyCreator extends AbstractAdvisorAutoPr
 		# org.springframework.aop.framework.CglibAopProxy#getProxy
 		# 使用的增强MethodInterceptor就是TransactionInterceptor(ProxyTransactionManagementConfiguration注入)
 ```
+
+## 代理处理分析
+
+### TransactionInterceptor拦截处理
+
+TransactionInterceptor实现了MethodInterceptor接口，用于增强被代理对象方法调用
+
+```java
+//org.springframework.transaction.interceptor.TransactionInterceptor
+public class TransactionInterceptor extends TransactionAspectSupport implements MethodInterceptor, Serializable {
+    
+    /* 实现MethodInterceptor接口，对代理类方法进行增强处理，代理对象方法调用拦截入口 */
+    public Object invoke(MethodInvocation invocation) throws Throwable {
+		// 获取目标类
+		Class<?> targetClass = (invocation.getThis() != null ? AopUtils.getTargetClass(invocation.getThis()) : null);
+		// 父类TransactionAspectSupport中方法，用于事务管理
+		return invokeWithinTransaction(invocation.getMethod(), targetClass, invocation::proceed);
+	}
+}
+```
+
+TransactionAspectSupport是TransactionInterceptor的抽象父类
+
+```java
+//org.springframework.transaction.interceptor.TransactionAspectSupport
+public abstract class TransactionAspectSupport implements BeanFactoryAware, InitializingBean {
+
+    //事务增强处理
+    protected Object invokeWithinTransaction(Method method, @Nullable Class<?> targetClass,
+                                             final InvocationCallback invocation) throws Throwable {
+
+        //获取当前方法事务属性信息，如果没有@Transaction注解，则目标方法不进行事务增强
+        TransactionAttributeSource tas = getTransactionAttributeSource();
+        final TransactionAttribute txAttr = (tas != null ? tas.getTransactionAttribute(method, targetClass) : null);
+        final PlatformTransactionManager tm = determineTransactionManager(txAttr);
+        final String joinpointIdentification = methodIdentification(method, targetClass, txAttr);
+
+        if (txAttr == null || !(tm instanceof CallbackPreferringPlatformTransactionManager)) {
+            // 事务开启
+            TransactionInfo txInfo = createTransactionIfNecessary(tm, txAttr, joinpointIdentification);
+            Object retVal = null;
+            try {
+				// 执行被代理对象的原始方法
+				retVal = invocation.proceedWithInvocation();
+			}
+			catch (Throwable ex) {
+				// 异常时事务回滚
+				completeTransactionAfterThrowing(txInfo, ex);
+				throw ex;
+			}
+			finally {
+				cleanupTransactionInfo(txInfo);
+			}
+            //正常结束，进行事务提交
+			commitTransactionAfterReturning(txInfo);
+			return retVal;
+        }
+    }
+    
+    /*事务管理器获取*/
+    protected PlatformTransactionManager determineTransactionManager(@Nullable TransactionAttribute txAttr) {
+        // 没有事务属性，则不进行事务管理
+        if (txAttr == null || this.beanFactory == null) {
+            return getTransactionManager();
+        }
+		
+        //获取当前对象中transactionManager
+        PlatformTransactionManager defaultTransactionManager = getTransactionManager();
+        if (defaultTransactionManager == null) {
+            //从缓存中获取默认事务管理器
+            defaultTransactionManager = this.transactionManagerCache.get(DEFAULT_TRANSACTION_MANAGER_KEY);
+            if (defaultTransactionManager == null) {
+                //从Spring容器中获取事务管理器：配置中配置的DataSourceTransactionManager
+                defaultTransactionManager = this.beanFactory.getBean(PlatformTransactionManager.class);
+                this.transactionManagerCache.putIfAbsent(
+                    DEFAULT_TRANSACTION_MANAGER_KEY, defaultTransactionManager);
+            }
+        }
+        return defaultTransactionManager;
+    }
+}
+```
+
+#### 事务开启过程
+
+```bash
+#入口
+	# org.springframework.transaction.interceptor.TransactionAspectSupport#createTransactionIfNecessary
+	
+# 由事务管理器进行事务获取
+	# org.springframework.transaction.support.AbstractPlatformTransactionManager#getTransaction
+	# 过程
+		# 我们调用@Transaction注释的入口方法，需要开启新事务
+        # org.springframework.transaction.support.AbstractPlatformTransactionManager#doBegin
+        	# 1. 从数据源中获取到Connection
+        		# Connection newCon = obtainDataSource().getConnection();
+            # 2. 封装连接对象
+            	# new ConnectionHolder(newCon)
+            # 3. 开启事务
+            	# con.setAutoCommit(false);
+            # 4. 将获取的连接保存到当前线程中，以当前数据源为key
+            	# TransactionSynchronizationManager.bindResource(obtainDataSource(), txObject.getConnectionHolder());
+            # 由上述动作，我们完成
+            	# 创建了connection连接对象，并开启事务
+            	# 将connection连接对象以数据源为key保存到线程中
+```
+
+TransactionSynchronizationManager分析
+
+```java
+//org.springframework.transaction.support.TransactionSynchronizationManager
+public abstract class TransactionSynchronizationManager {
+    //线程管理的map
+    private static final ThreadLocal<Map<Object, Object>> resources = new NamedThreadLocal<>("Transactional resources");
+    
+    /*从当前线程中获取目标资源*/
+    private static Object doGetResource(Object actualKey) {
+        //获取线程对应map
+		Map<Object, Object> map = resources.get();
+		if (map == null) {
+			return null;
+		}
+        //从map集合中获取对应资源
+		Object value = map.get(actualKey);
+		return value;
+	}
+    
+    /*将目标资源保存到当前线程中*/
+    public static void bindResource(Object key, Object value) throws IllegalStateException {
+        Map<Object, Object> map = resources.get();
+		// 如果当前线程对应map不存在，则设置
+		if (map == null) {
+			map = new HashMap<>();
+			resources.set(map);
+		}
+        //保存资源
+        Object oldValue = map.put(actualKey, value);
+    }
+}
+```
+
+#### 原始方法调用
+
+原始方法调用中，由于我们是整合mybatis，所以由整合过程分析
+
+```bash
+# 1. SqlSessionFactoryBean中创建TransactionFactory
+	# org.mybatis.spring.SqlSessionFactoryBean#buildSqlSessionFactory
+	# 由Mybatis事务分析可知，我们解析Environment时，创建TransactionFactory
+		# spring整合mybatis时，如果没有自行配置对应TransactionFactory，则默认为SpringManagedTransactionFactory
+			# this.transactionFactory == null ? new SpringManagedTransactionFactory() : this.transactionFactory
+			
+# 2. 由Spring整合Mybatis过程分析可知，我们在代理对象原始方法中，使用对应mapper代理对象进行方法调用时，将由SqlSessionTemplate进行处理
+	# SqlSessionTemplate中内部类SqlSessionInterceptor实现InvocationHandler
+    # 所以最终进行数据库操作时，入口是SqlSessionInterceptor的invoke方法
+    
+# 3. invoke方法
+	# 第一步：获取SqlSession对象
+		# org.mybatis.spring.SqlSessionUtils#getSqlSession
+		# 1. 优先尝试从TransactionSynchronizationManager，以当前sessionFactory作为key，获取对应SqlSessionHolder
+			# SqlSessionHolder holder = (SqlSessionHolder) TransactionSynchronizationManager.getResource(sessionFactory);
+		# 2. 第一次是获取不到的，此时则进行创建
+			# session = sessionFactory.openSession(executorType);
+		# 分析	
+            # 实质是org.apache.ibatis.session.defaults.DefaultSqlSessionFactory#openSessionFromDataSource
+            # 此时从Environment中获取对应TransactionFactory，则为SpringManagedTransactionFactory
+            # 将SpringManagedTransactionFactory保存到Executor中
+            
+	# 第二步：将获取的SqlSession对象以sessionFactory作为key保存到当前线程中
+		# org.mybatis.spring.SqlSessionUtils#registerSessionHolder
+			# TransactionSynchronizationManager.bindResource(sessionFactory, holder);
+		# 分析
+			# 由此可知，spring整合Mybatis，对应于一个线程、一个sessionFactory，是共享一个SqlSession对象
+			# 同一线程中的后续操作，可直接由TransactionSynchronizationManager中获取对应SqlSession对象
+			
+	# 第三步：使用获取的SqlSession进行数据库操作
+		# 由Mybatis处理过程分析可知，将从SqlSession中的Executor中，获取SpringManagedTransactionFactory进行连接获取
+		# org.apache.ibatis.session.defaults.DefaultSqlSession#getConnection
+			# 分析SpringManagedTransactionFactory可知，其由数据源创建一个SpringManagedTransaction对象
+				# org.mybatis.spring.transaction.SpringManagedTransactionFactory#newTransaction
+	# 第四步：SpringManagedTransaction获取连接对象
+		# org.mybatis.spring.transaction.SpringManagedTransaction#openConnection	
+        # 过程
+        	# 1. 由数据源获取连接对象
+        		# org.springframework.jdbc.datasource.DataSourceUtils#getConnection
+        		# 实质是从TransactionSynchronizationManager中获取当前线程中对应的connection对象
+        			# ConnectionHolder conHolder = (ConnectionHolder) TransactionSynchronizationManager.getResource(dataSource);
+        			# conHolder.getConnection();
+			# 2. 由connection对象进行数据库操作
+			
+# 总结
+	# spring声明式事务分为以下步骤
+		# 1. 在拦截@Transaction注解的代理方法中，由数据源中获取connection连接，开启事务，并保存到TransactionSynchronizationManager线程变量中
+		# 2. 原始方法中，由SpringManagedTransactionFactory，从TransactionSynchronizationManager中获取数据源对应连接，进行数据库操作
+	# 注意
+		# 由于保存线程变量时，使用当前数据源作为key值，所有如果是多数据源，则可能事务无效
+		# 由原始方法中调用同一类中方法，将不在进行事务的控制
+```
+
+## 事务总结
+
+```bash
+# 实质就是同一线程共享同一connection实现
+# 过程
+	# 1. TransactionInterceptor拦截代理@Transaction注释的代理对象，进行增强处理
+		# 通过以下类协作，获取一个connection对象，并保存到当前线程中
+			# DataSourceTransactionManager
+				# 管理对象
+			# TransactionSynchronizationManager
+				# 线程存储对象
+			# SpringManagedTransactionFactory
+				# Spring管理工厂
+			# SpringManagedTransaction
+				# 包装connection对象
+	# 2. 在代理对象的原始方法中，进行mybatis操作获取SqlSession，调用Executor进行数据库操作时
+		# 由SpringManagedTransaction中获取connection
+		# 此时由DataSourceUtils从当前线程中获取存储的connection对象
+		
+	# 3. 由上述操作，保持代理对象操作时使用同一connection对象，在TransactionInterceptor出口进行事务的提交/回滚，达到事务控制
+```
+
+## 事务传递
+
+```bash
+# 事务传递有两点需要注意
+	# 1. 原始方法中调用自身方法
+		# 由于TransactionInterceptor拦截增强后，调用原始方法时，是交由原始对象调用
+		# 此时在方法中调用自身方法，将由原始对象调用，而不是代理对象调用，所以不受TransactionInterceptor拦截增强
+	# 2. 如果入口方法使用try、catch包裹方法调用，不抛出异常，则入口方法控制的事务无效
+		# 因为没有异常发生，则不会进入代理的回滚
+		
+# 事务传递性，不多讲述，下面主要描述在传递过程中开启新事务的处理，即事务挂起处理
+	# 入口
+		# org.springframework.transaction.support.AbstractPlatformTransactionManager#handleExistingTransaction
+		# 事务挂起
+			# org.springframework.transaction.support.AbstractPlatformTransactionManager#suspend
+		# 开启新事务
+			# org.springframework.transaction.support.AbstractPlatformTransactionManager#doBegin
+	# 过程
+		# 1. 将存储在当前线程中的连接从线程中移除，保存到DataSourceTransactionObject中
+		# 2. 开启新事务，创建连接，将其保存到线程中
+			# 后续的数据库操作将由新的connection对象执行
+		# 3. 在新事务方法处理完后，将原有的connection重新保存到线程中
+			# org.springframework.transaction.interceptor.TransactionAspectSupport.TransactionInfo#restoreThreadLocalStatus
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
