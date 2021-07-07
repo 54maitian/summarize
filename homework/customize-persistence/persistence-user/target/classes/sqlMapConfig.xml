@@ -1,0 +1,13 @@
+<configuration>
+    <dataSource>
+        <property name="dirverClass" value="com.mysql.jdbc.Driver"/>
+        <property name="url" value="jdbc:mysql://192.168.1.105:3306/mytest?characterEncoding=utf-8"/>
+        <property name="username" value="root"/>
+        <property name="password" value="root"/>
+    </dataSource>
+
+    <mappers>
+        <!--此处引入mapper对应配置，则代码编写时不需要关注mapper配置位置-->
+        <mapper resource="PersonMapper.xml"/>
+    </mappers>
+</configuration>
