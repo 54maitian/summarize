@@ -2445,6 +2445,8 @@ class ConfigurationClassParser {
                 parse(bd.getBeanClassName(), holder.getBeanName());
             }
         }
+        // 处理通过@Import注解导入的DeferredImportSelector实例
+        this.deferredImportSelectorHandler.process();
     }
 }
 ```
@@ -2742,10 +2744,10 @@ private void processImports(ConfigurationClass configClass, SourceClass currentS
             ImportSelector selector = BeanUtils.instantiateClass(candidateClass, ImportSelector.class);
             ParserStrategyUtils.invokeAwareMethods(
                 selector, this.environment, this.resourceLoader, this.registry);
+            // 如果此ImportSelector实例还实现了DeferredImportSelector接口，则将其保存到deferredImportSelectors属性中
             if (selector instanceof DeferredImportSelector) {
                 this.deferredImportSelectorHandler.handle(configClass, (DeferredImportSelector) selector);
-            }
-            else {
+            } else {
                 // 调用ImportSelector#selectImports方法，获取由ImportSelector引入的类
                 String[] importClassNames = selector.selectImports(currentSourceClass.getMetadata());
                 Collection<SourceClass> importSourceClasses = asSourceClasses(importClassNames);
@@ -2791,7 +2793,7 @@ final class ConfigurationClass {
 
 
 
-**小结**：对于`@Import`引入的类，分为三种
+**小结**：对于`@Import`引入的类，分为四种
 
 - `ImportSelector`子类
   - 创建其`ImportSelector`实例
@@ -3242,6 +3244,388 @@ private void loadBeanDefinitionsFromRegistrars(Map<ImportBeanDefinitionRegistrar
     registrars.forEach((registrar, metadata) ->  registrar.registerBeanDefinitions(metadata, this.registry));
 }
 ```
+
+
+
+##### 4. DeferredImportSelector的特殊处理
+
+`DeferredImportSelector`接口是一个实现了`ImportSelector`接口的接口
+
+```java
+// org.springframework.context.annotation.DeferredImportSelector
+public interface DeferredImportSelector extends ImportSelector {
+    
+    /* 此DeferredImportSelector导入的Group,Group为DeferredImportSelector内部接口 */
+    Class<? extends Group> getImportGroup();
+    
+    /* DeferredImportSelector内部接口 */
+    interface Group {
+        
+        /* 处理导入信息
+        * metadata：@Import注解导入DeferredImportSelector，@Import所在配置类的注解元数据
+        * selector：通过@Import注解导入的具体DeferredImportSelector实例
+        */
+        void process(AnnotationMetadata metadata, DeferredImportSelector selector);
+        
+        /* 返回具体的导入类 */
+        Iterable<Entry> selectImports();
+        
+        /* 封装要导入的类Class及其注解信息 */
+        class Entry {
+            
+            //要导入的类
+            private final String importClassName;
+            
+            //导入类的注解信息
+            private final AnnotationMetadata metadata;
+            
+        }
+    }
+}
+```
+
+由上述接口代码可知
+
+- `DeferredImportSelector`用于封装导入的`Group`组
+  - 通过`getImportGroup`获取具体的`Group`的`Class`
+- `Group`是导入的组
+  - `DeferredImportSelector.Group`
+  - `Group`是处理获取具体导入类的对象
+
+
+
+在`Spring`的处理流程中，主要通过`ConfigurationClassParser`类对通过`@Import`注解导入的`DeferredImportSelector`实例进行处理
+
+此处我们先了解一下`ConfigurationClassParser`中几个涉及`DeferredImportSelector`处理的内部类
+
+
+
+###### DeferredImportSelectorHolder
+
+`DeferredImportSelectorHolder`用于封装`DeferredImportSelector`实例及通过`@Import`导入其所在的配置类
+
+```java
+// org.springframework.context.annotation.ConfigurationClassParser.DeferredImportSelectorHolder
+private static class DeferredImportSelectorHolder {
+    
+	// @Import注解所在的配置类
+    private final ConfigurationClass configurationClass;
+	// 通过@Import导入的DeferredImportSelector实例
+    private final DeferredImportSelector importSelector;
+
+}
+```
+
+
+
+###### DefaultDeferredImportSelectorGroup
+
+```java
+// org.springframework.context.annotation.ConfigurationClassParser.DefaultDeferredImportSelectorGroup
+private static class DefaultDeferredImportSelectorGroup implements Group {
+	
+    // 此组中要导入的类的集合
+    private final List<Entry> imports = new ArrayList<>();
+
+    /* 通过调用DeferredImportSelector父接口ImportSelector#selectImports，获取要导入的类，并封装为Entry，保存到集合中 */
+    public void process(AnnotationMetadata metadata, DeferredImportSelector selector) {
+        for (String importClassName : selector.selectImports(metadata)) {
+            this.imports.add(new Entry(metadata, importClassName));
+        }
+    }
+
+    /* 获取要导入类的集合 */ 
+    public Iterable<Entry> selectImports() {
+        return this.imports;
+    }
+}
+```
+
+`DefaultDeferredImportSelectorGroup`是默认的`DeferredImportSelector.Group`类型，如果没有给定`type`，则使用它
+
+
+
+###### DeferredImportSelectorGrouping
+
+```java
+private static class DeferredImportSelectorGrouping {
+
+    // 当前组实例
+    private final DeferredImportSelector.Group group;
+
+    // 对应的要导入的DeferredImportSelectorHolder集合
+    private final List<DeferredImportSelectorHolder> deferredImports = new ArrayList<>();
+
+    DeferredImportSelectorGrouping(Group group) {
+        this.group = group;
+    }
+
+    /* 添加要导入的DeferredImportSelectorHolder对象 */
+    public void add(DeferredImportSelectorHolder deferredImport) {
+        this.deferredImports.add(deferredImport);
+    }
+
+    /* 获取要导入的Entry迭代器 */
+    public Iterable<Group.Entry> getImports() {
+        for (DeferredImportSelectorHolder deferredImport : this.deferredImports) {
+            // 遍历所有的DeferredImportSelectorHolder，先调用process进行处理
+            this.group.process(deferredImport.getConfigurationClass().getMetadata(),
+                               deferredImport.getImportSelector());
+        }
+        // 再调用selectImports获取要导入的entry的迭代器
+        return this.group.selectImports();
+    }
+}
+```
+
+
+
+###### DeferredImportSelectorHandler
+
+```java
+// org.springframework.context.annotation.ConfigurationClassParser.DeferredImportSelectorHandler
+private class DeferredImportSelectorHandler {
+    
+    //用于缓存DeferredImportSelectorHolder的集合
+	private List<DeferredImportSelectorHolder> deferredImportSelectors = new ArrayList<>();
+    
+    /* 处理指定的DeferredImportSelector */
+    public void handle(ConfigurationClass configClass, DeferredImportSelector importSelector) {
+        //...
+    }
+    
+    public void process() {
+        //...
+    }
+}
+```
+
+
+
+至此，我们分析一下在`ConfigurationClassParser`中对于`DeferredImportSelector`的处理流程
+
+
+
+###### 第一步：缓存`DeferredImportSelector`实例
+
+在`ConfigurationClassParser`中存在一个`DeferredImportSelectorHandler`实例用于管理`DeferredImportSelectorHolder`集合
+
+在`ConfigurationClassParser#processImports`中我们处理了通过`@Import`注解引入`ImportSelector`实例，在对`ImportSelector`实例进行处理时，存在一个判断
+
+```java
+// org.springframework.context.annotation.ConfigurationClassParser#processImports
+private void processImports(...) {
+    for (SourceClass candidate : importCandidates) {
+        if (candidate.isAssignable(ImportSelector.class)) {
+            // 获取引入类的ImportSelector实例
+            ImportSelector selector = BeanUtils.instantiateClass(candidateClass, ImportSelector.class);
+            if (selector instanceof DeferredImportSelector) {
+                // 如果此ImportSelector实例还实现了DeferredImportSelector接口，则将其保存到deferredImportSelectors属性中
+                this.deferredImportSelectorHandler.handle(configClass, (DeferredImportSelector) selector);
+            }
+        }
+    }
+}
+```
+
+
+
+由上述代码可知，我们通过`DeferredImportSelectorHandler#handle`处理`DeferredImportSelector`实例，下面我们分析此方法
+
+```java
+// org.springframework.context.annotation.ConfigurationClassParser.DeferredImportSelectorHandler
+private class DeferredImportSelectorHandler {
+    public void handle(ConfigurationClass configClass, DeferredImportSelector importSelector) {
+        // 1. 将ConfigurationClass配置类、DeferredImportSelector实例封装为DeferredImportSelectorHolder实例
+        DeferredImportSelectorHolder holder = new DeferredImportSelectorHolder(configClass, importSelector);
+        // 将创建的DeferredImportSelectorHolder实例保存到集合中
+        this.deferredImportSelectors.add(holder);
+    }
+}
+```
+
+可知`DeferredImportSelectorHandler#handle`方法就是将得到的`DeferredImportSelector`实例，连同其对应配置类`ConfigurationClass`一起封装为一个
+
+`DeferredImportSelectorHolder`实例，并将其缓存到`DeferredImportSelectorHandler#deferredImportSelectors`集合中
+
+
+
+###### 第二部：处理获取的`DeferredImportSelector`实例
+
+对于`postProcessBeanDefinitionRegistry`方法的分析中，实际我们通过`ConfigurationClassParser`对配置类处理的入口是`ConfigurationClassParser#parse`方法，在此方法中，我们遍历所有的`BeanDefinition`，将其封装为`ConfigurationClass`并通过重载的`parse`方法对其进行处理
+
+实际在通过`parse`方法对所有的`ConfigurationClass`处理后，我们对获取的`DeferredImportSelector`实例进行了处理
+
+```java
+// org.springframework.context.annotation.ConfigurationClassParser#parse
+public void parse(Set<BeanDefinitionHolder> configCandidates) {
+    //省略...
+    
+    // 调用DeferredImportSelectorHandler#process处理加载的DeferredImportSelector实例
+    this.deferredImportSelectorHandler.process();
+}
+```
+
+
+
+所以我们分析一下`process`方法
+
+```java
+private class DeferredImportSelectorHandler {
+    public void process() {
+        // 获取缓存的DeferredImportSelectorHolder集合
+        List<DeferredImportSelectorHolder> deferredImports = this.deferredImportSelectors;
+        this.deferredImportSelectors = null;
+        try {
+            if (deferredImports != null) {
+                // 1.创建DeferredImportSelectorGroupingHandler实例
+                DeferredImportSelectorGroupingHandler handler = new DeferredImportSelectorGroupingHandler();
+                // 2.将对应DeferredImportSelectorHolder集合进行排序
+                deferredImports.sort(DEFERRED_IMPORT_COMPARATOR);
+                // 3.将DeferredImportSelectorHolder注册到DeferredImportSelectorGroupingHandler中
+                deferredImports.forEach(handler::register);
+                // 4.调用DeferredImportSelectorGroupingHandler#processGroupImports进行处理
+                handler.processGroupImports();
+            }
+        }
+        finally {
+            // 集合重置
+            this.deferredImportSelectors = new ArrayList<>();
+        }
+    }
+}
+```
+
+由上述代码可知，我们通过创建`DeferredImportSelectorGroupingHandler`处理器对封装的`DeferredImportSelectorHolder`集合进行处理
+
+- 通过`DEFERRED_IMPORT_COMPARATOR`静态变量对所有的`DeferredImportSelectorHolder`进行排序，具体先不分析
+  - `(o1, o2) -> AnnotationAwareOrderComparator.INSTANCE.compare(o1.getImportSelector(), o2.getImportSelector())`
+
+- 通过`register`方法，将`DeferredImportSelectorHolder`集合遍历注册到`DeferredImportSelectorGroupingHandler`中
+- 通过`processGroupImports`方法，处理导入的类
+
+
+
+现在分析一下`DeferredImportSelectorGroupingHandler`
+
+###### DeferredImportSelectorGroupingHandler
+
+```java
+// org.springframework.context.annotation.ConfigurationClassParser.DeferredImportSelectorGroupingHandler
+private class DeferredImportSelectorGroupingHandler {
+    // 缓存DeferredImportSelectorGrouping
+    private final Map<Object, DeferredImportSelectorGrouping> groupings = new LinkedHashMap<>();
+
+    // 配置类注解元数据、配置类Class
+    private final Map<AnnotationMetadata, ConfigurationClass> configurationClasses = new HashMap<>();
+    
+    public void register(DeferredImportSelectorHolder deferredImport) {
+        //...
+    }
+    
+    public void processGroupImports() {
+        //...
+    }
+    
+    private Group createGroup(@Nullable Class<? extends Group> type) {
+        //...
+    }
+}
+```
+
+
+
+可知，`DeferredImportSelectorGroupingHandler`中存在两个用于缓存的`map`集合
+
+
+
+由前面处理步骤，我们先分析`register`方法
+
+```java
+public void register(DeferredImportSelectorHolder deferredImport) {
+    // 1. 获取当前DeferredImportSelector对应组Group.Class
+    // 获取DeferredImportSelectorHolder中包装的DeferredImportSelector实例
+    // 调用DeferredImportSelector#getImportGroup获取需要导入的组Class
+    Class<? extends Group> group = deferredImport.getImportSelector().getImportGroup();
+
+    // 2. 创建DeferredImportSelectorGrouping实例，并保存到groupings中
+    // 通过computeIfAbsent方法判断是否已存在
+    // 不存在则通过createGroup方法创建DefaultDeferredImportSelectorGroup实例，并封装为DeferredImportSelectorGrouping实例
+    DeferredImportSelectorGrouping grouping = this.groupings.computeIfAbsent(
+        (group != null ? group : deferredImport),
+        key -> new DeferredImportSelectorGrouping(createGroup(group)));
+    // 将DeferredImportSelectorHolder对象保存到DeferredImportSelectorGrouping实例中
+    grouping.add(deferredImport);
+
+    // 3. 将配置类注解元数据、配置类Class保存到configurationClasses中
+    this.configurationClasses.put(deferredImport.getConfigurationClass().getMetadata(),deferredImport.getConfigurationClass());
+}
+
+private Group createGroup(@Nullable Class<? extends Group> type) {
+    // 如果没有对应组Class，则默认为DefaultDeferredImportSelectorGroup.class
+    Class<? extends Group> effectiveType = (type != null ? type : DefaultDeferredImportSelectorGroup.class);
+    // 创建Group实例
+    Group group = BeanUtils.instantiateClass(effectiveType);
+    // 通过Aware接口方法注入environment、resourceLoader、registry
+    ParserStrategyUtils.invokeAwareMethods(group,
+                                           ConfigurationClassParser.this.environment,
+                                           ConfigurationClassParser.this.resourceLoader,
+                                           ConfigurationClassParser.this.registry);
+    return group;
+}
+```
+
+`register`方法主要功能
+
+- 获取`DeferredImportSelector#Group`并封装为`DeferredImportSelectorGrouping`实例，将其保存到`groupings`中
+- 将配置类注解元数据、配置类`ConfigurationClass`保存到`configurationClasses`中
+
+
+
+下面我们分析一下`processGroupImports`方法
+
+```java
+public void processGroupImports() {
+    for (DeferredImportSelectorGrouping grouping : this.groupings.values()) {
+        // 1. 通过getImports方法获取DeferredImportSelector实例引入的类
+        grouping.getImports().forEach(entry -> {
+            // 通过注解元数据获取对应配置类
+            ConfigurationClass configurationClass = this.configurationClasses.get(
+                entry.getMetadata());
+            // 递归调用processImports方法处理引入的配置类
+            processImports(configurationClass, asSourceClass(configurationClass),
+                           asSourceClasses(entry.getImportClassName()), false);
+
+        });
+    }
+}
+```
+
+由上述代码可知，`processGroupImports`方法处理
+
+- 通过`DeferredImportSelectorGrouping#getImports`方法获取需要引入的`Group.Entry`实体，实际处理
+  - 通过`Group#process`处理`DeferredImportSelector`实例
+  - 通过`Group#selectImports`获取要引入的类对应`Group.Entry`实体
+
+- 通过递归调用`processImports`方法处理单个`Group.Entry`实体
+
+
+
+###### 总结
+
+`DeferredImportSelector`的处理主要需要关注的是
+
+- 对应`DeferredImportSelector#getImportGroup`获取的`Group`接口实例是`DeferredImportSelector`主要功能的实现者
+- **关注的重点**：通过先后调用`Group#process、Group#selectImports`方法，可以获得我们需要导入的配置类
+- 后续调用`ConfigurationClassParser#processImports`将`DeferredImportSelector`实例导入的类当做配置类进行处理，最终注册到IOC容器中
+
+`DeferredImportSelector`与`ImportSelector`的区别：
+
+- `DeferredImportSelector`接口是`ImportSelector`接口的一个扩展接口
+- `ImportSelector`实例的`selectImports`方法的执行时机，是在`@Configuration`注解中的其他逻辑被处理之前，所谓的其他逻辑，包括对`@ImportResource、@Bean`这些注解的处理（注意，这里只是对`@Bean`修饰的方法的处理，并不是立即调用`@Bean`修饰的方法，这个区别很重要！）
+
+- `DeferredImportSelector`实例的`selectImports`方法的执行时机，是在`@Configuration`注解中的其他逻辑被处理完毕之后，所谓的其他逻辑，包括对`@ImportResource、@Bean`这些注解的处理
+- `DeferredImportSelector`的实现类可以用`Order`注解，或者实现`Ordered`接口来对`selectImports`的执行顺序排序
 
 
 

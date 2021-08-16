@@ -1713,7 +1713,7 @@ public interface HandlerMethodReturnValueHandler {
 }
 ```
 
-##### `@RequestBody`的处理
+##### `@ResponseBody`的处理
 
 由于`MappingJackson2XmlHttpMessageConverter`实现了`HandlerMethodReturnValueHandler`接口，所以通过`handleReturnValue`方法进行处理
 
