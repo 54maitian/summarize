@@ -2555,3 +2555,668 @@ public DispatcherServletRegistrationBean dispatcherServletRegistration(Dispatche
 - 通过自动配置方式注册了`DispatcherServlet`到IOC容器中
 
 - 通过`ServletContext#addServlet`将`DispatcherServlet`实例部署到了`Servlet`容器中
+
+
+
+## SpringBoot数据源访问
+
+### 数据源自动配置
+
+#### 自动配置依赖
+
+使用`SpringBoot`数据源自动配置，我们需要引入依赖`spring-boot-starter-jdbc`
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-jdbc</artifactId>
+</dependency>
+```
+
+`spring-boot-starter-jdbc`引入依赖
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>com.zaxxer</groupId>
+        <artifactId>HikariCP</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework</groupId>
+        <artifactId>spring-jdbc</artifactId>
+    </dependency>
+</dependencies>
+```
+
+我们查看`spring-boot-starter-jdbc`依赖内容，其主要包括三部分
+
+- `spring-boot-starter`
+  - 自动配置`starter`
+- `HikariCP`
+  - `HikariCP`数据源相关依赖
+- `spring-jdbc`
+  - `spring`数据访问相关依赖
+
+
+
+#### DataSourceAutoConfiguration
+
+我们引入了数据源自动配置依赖，此时我们需要关注的是相关的自动配置类，它就是`DataSourceAutoConfiguration`
+
+```
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration,\
+```
+
+
+
+我们查看`DataSourceAutoConfiguration`类
+
+```java
+// org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+@Configuration(proxyBeanMethods = false)
+@ConditionalOnClass({ DataSource.class, EmbeddedDatabaseType.class })
+@EnableConfigurationProperties(DataSourceProperties.class)
+@Import({ DataSourcePoolMetadataProvidersConfiguration.class, DataSourceInitializationConfiguration.class })
+public class DataSourceAutoConfiguration {
+    
+    @Configuration(proxyBeanMethods = false)
+	@Conditional(PooledDataSourceCondition.class)
+	@ConditionalOnMissingBean({ DataSource.class, XADataSource.class })
+	@Import({ DataSourceConfiguration.Hikari.class, DataSourceConfiguration.Tomcat.class,
+			DataSourceConfiguration.Dbcp2.class, DataSourceConfiguration.Generic.class,
+			DataSourceJmxConfiguration.class })
+	protected static class PooledDataSourceConfiguration {
+
+	}
+}
+```
+
+
+
+关于自动配置我们首要关注的两点：
+
+- `DataSourceAutoConfiguration`类上通过`@EnableConfigurationProperties`引入`DataSourceProperties`属性配置类
+- `PooledDataSourceConfiguration`内部类通过`@Import`引入`DataSourceConfiguration`的数据源相关的内部类
+
+
+
+我们首先查看`DataSourceProperties`配置类
+
+#### DataSourceProperties
+
+```java
+// org.springframework.boot.autoconfigure.jdbc.DataSourceProperties
+@ConfigurationProperties(prefix = "spring.datasource")
+public class DataSourceProperties implements BeanClassLoaderAware, InitializingBean {
+    // 数据库连接信息
+    private String driverClassName;
+    private String url;
+    private String username;
+    private String password;
+    // 数据源类型
+    private Class<? extends DataSource> type;
+}
+```
+
+
+
+`DataSourceProperties`类主要通过`@ConfigurationProperties`注入前缀为`spring.datasource`的属性，保存数据库连接信息
+
+所以我们通常使用自动配置数据源时，需要配置`spring.datasource`前缀的属性。例：
+
+```properties
+spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
+spring.datasource.url=jdbc:mysql://10.199.245.227:3307/tax_platform_admin?useUnicode=true&characterEncoding=utf-8&useSSL=true&serverTimezone=UTC
+spring.datasource.username=apms
+spring.datasource.password=apms123123
+```
+
+
+
+由于使用`mysql`数据库连接，所以要引入`mysql`数据库连接依赖
+
+```xml
+<dependency>
+    <groupId>mysql</groupId>
+    <artifactId>mysql-connector-java</artifactId>
+</dependency>
+```
+
+
+
+我们继续分析`DataSourceConfiguration`类
+
+#### DataSourceConfiguration
+
+```java
+abstract class DataSourceConfiguration {
+
+   @SuppressWarnings("unchecked")
+   protected static <T> T createDataSource(DataSourceProperties properties, Class<? extends DataSource> type) {
+      return (T) properties.initializeDataSourceBuilder().type(type).build();
+   }
+
+   /**
+    * Tomcat 池数据源配置。
+    */
+   @Configuration(proxyBeanMethods = false)
+   @ConditionalOnClass(org.apache.tomcat.jdbc.pool.DataSource.class)
+   @ConditionalOnMissingBean(DataSource.class)
+   @ConditionalOnProperty(name = "spring.datasource.type", havingValue = "org.apache.tomcat.jdbc.pool.DataSource",
+         matchIfMissing = true)
+   static class Tomcat {
+
+      @Bean
+      @ConfigurationProperties(prefix = "spring.datasource.tomcat")
+      org.apache.tomcat.jdbc.pool.DataSource dataSource(DataSourceProperties properties) {
+         org.apache.tomcat.jdbc.pool.DataSource dataSource = createDataSource(properties,
+               org.apache.tomcat.jdbc.pool.DataSource.class);
+         DatabaseDriver databaseDriver = DatabaseDriver.fromJdbcUrl(properties.determineUrl());
+         String validationQuery = databaseDriver.getValidationQuery();
+         if (validationQuery != null) {
+            dataSource.setTestOnBorrow(true);
+            dataSource.setValidationQuery(validationQuery);
+         }
+         return dataSource;
+      }
+
+   }
+
+   /**
+    * Hikari 数据源配置。
+    */
+   @Configuration(proxyBeanMethods = false)
+   @ConditionalOnClass(HikariDataSource.class)
+   @ConditionalOnMissingBean(DataSource.class)
+   @ConditionalOnProperty(name = "spring.datasource.type", havingValue = "com.zaxxer.hikari.HikariDataSource",
+         matchIfMissing = true)
+   static class Hikari {
+
+      @Bean
+      @ConfigurationProperties(prefix = "spring.datasource.hikari")
+      HikariDataSource dataSource(DataSourceProperties properties) {
+         HikariDataSource dataSource = createDataSource(properties, HikariDataSource.class);
+         if (StringUtils.hasText(properties.getName())) {
+            dataSource.setPoolName(properties.getName());
+         }
+         return dataSource;
+      }
+
+   }
+
+   /**
+    * DBCP 数据源配置。
+    */
+   @Configuration(proxyBeanMethods = false)
+   @ConditionalOnClass(org.apache.commons.dbcp2.BasicDataSource.class)
+   @ConditionalOnMissingBean(DataSource.class)
+   @ConditionalOnProperty(name = "spring.datasource.type", havingValue = "org.apache.commons.dbcp2.BasicDataSource",
+         matchIfMissing = true)
+   static class Dbcp2 {
+
+      @Bean
+      @ConfigurationProperties(prefix = "spring.datasource.dbcp2")
+      org.apache.commons.dbcp2.BasicDataSource dataSource(DataSourceProperties properties) {
+         return createDataSource(properties, org.apache.commons.dbcp2.BasicDataSource.class);
+      }
+
+   }
+
+   /**
+    * 通用数据源配置。
+    */
+   @Configuration(proxyBeanMethods = false)
+   @ConditionalOnMissingBean(DataSource.class)
+   @ConditionalOnProperty(name = "spring.datasource.type")
+   static class Generic {
+
+      @Bean
+      DataSource dataSource(DataSourceProperties properties) {
+         return properties.initializeDataSourceBuilder().build();
+      }
+
+   }
+
+}
+```
+
+
+
+`DataSourceConfiguration`是一个抽象类，且其并不是配置类，所以我们主要分析其中的内部类
+
+
+
+#### 默认数据源
+
+在`SpringBoot`数据源自动配置中，存在几个默认的数据源，它们分别对应`DataSourceConfiguration`类中不同的配置类
+
+| 数据源                      | 内部配置类                           |
+| --------------------------- | ------------------------------------ |
+| HikariCP                    | DataSourceConfiguration.Hikari.class |
+| Commons DBCP2               | DataSourceConfiguration.Dbcp2.class  |
+| Tomcat JDBC Connection Pool | DataSourceConfiguration.Tomcat.class |
+
+
+
+在三个内部配置类上，均通过`Condition`条件注解进行条件注入，其中都通过`@ConditionalOnClass`注解定义仅当当前数据源对应类存在时加载配置
+
+
+
+从引入的`spring-boot-starter-jdbc`依赖中，我们可以发现`SpringBoot`默认引入`HikariCP`依赖，所以`SpringBoot`默认注入`HikariDataSource`数据源
+
+我们可以通过自动注入的方式获取数据源进行数据操作
+
+```java
+@RunWith(SpringRunner.class)
+@SpringBootTest
+class SpringBootMytestDatasourceApplicationTests {
+
+    // 通过@Autowired自动注入数据源
+	@Autowired
+	private DataSource dataSource;
+
+	@Test
+	void contextLoads() throws SQLException {
+		Connection connection = dataSource.getConnection();
+		System.out.println(connection);
+	}
+
+}
+```
+
+
+
+#### 切换默认数据源
+
+虽然`SpringBoot`默认引入`HikariCP`数据源依赖，我们也可以通过替换数据源依赖切换为其他两种默认数据源
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-jdbc</artifactId>
+    <!--排除默认HikariCP依赖-->
+    <exclusions>
+        <exclusion>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+        </exclusion>
+    </exclusions>
+</dependency>
+
+<!-- 1. 引入Tomcat JDBC Connection Pool依赖-->
+<dependency>
+    <groupId>org.apache.tomcat</groupId>
+    <artifactId>tomcat-jdbc</artifactId>
+</dependency>
+
+<!-- 2. 引入Commons DBCP2依赖-->
+<dependency>
+    <groupId>org.apache.commons</groupId>
+    <artifactId>commons-dbcp2</artifactId>
+</dependency>
+```
+
+
+
+#### 数据库连接信息注入
+
+`DataSourceConfiguration`的内部配置类均通过`dataSource`方法，创建一个`DataSource`对象，且其都注入一个`DataSourceProperties`对象作为参数
+
+所以我们可以普遍使用`spring.datasource`前缀配置数据库连接信息
+
+但是对于默认的数据源，在`dataSource`方法上都存在各自独特的`@ConfigurationProperties`注解前缀，我们也可以使用它们进行数据源连接信息配置
+
+| 数据源                      | 前缀                     |
+| --------------------------- | ------------------------ |
+| HikariCP                    | spring.datasource.hikari |
+| Commons DBCP2               | spring.datasource.dbcp2  |
+| Tomcat JDBC Connection Pool | spring.datasource.tomcat |
+
+
+
+#### 数据源类型
+
+通过分析`DataSourceConfiguration`的内部配置类，它们都存在一个`@ConditionalOnProperty(name = "spring.datasource.type")`注解
+
+主要通过`spring.datasource.type`属性控制数据源类型
+
+对于默认数据源配置时，`spring.datasource.type`属性可以省略，因为在`@ConditionalOnProperty`注解中`matchIfMissing = true`
+
+
+
+对应于默认数据源，其`type`不同
+
+| 数据源                      | spring.datasource.type                   |
+| --------------------------- | ---------------------------------------- |
+| HikariCP                    | com.zaxxer.hikari.HikariDataSource       |
+| Commons DBCP2               | org.apache.commons.dbcp2.BasicDataSource |
+| Tomcat JDBC Connection Pool | org.apache.tomcat.jdbc.pool.DataSource   |
+
+
+
+#### `Druid`连接池的配置
+
+通常我们项目使用时，不一定都使用`SpringBoot`默认的三种数据源，此时将使用自定义的数据源类型
+
+例如我们通常使用`Druid`连接池，那么我们将如何配置使用
+
+
+
+##### 1. 引入依赖
+
+`SpringBoot`存在`druid`连接池的自动配置`starter`
+
+```xml
+<dependency>
+    <groupId>com.alibaba</groupId>
+    <artifactId>druid-spring-boot-starter</artifactId>
+    <version>1.1.10</version>
+</dependency>
+```
+
+
+
+##### 2. 配置连接属性
+
+```yaml
+spring:
+    datasource:
+        username: root
+        password: root
+        url: jdbc:mysql:///springboot_h?useUnicode=true&characterEncoding=utf8&useSSL=true&serverTimezone=UTC
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        initialization-mode: always
+        
+        # 使用druid数据源
+        type: com.alibaba.druid.pool.DruidDataSource
+        
+        # 数据源其他配置
+        initialSize: 5
+        minIdle: 5
+        maxActive: 20
+        maxWait: 60000
+        timeBetweenEvictionRunsMillis: 60000
+        minEvictableIdleTimeMillis: 300000
+        validationQuery: SELECT 1 FROM DUAL
+        testWhileIdle: true
+        testOnBorrow: false
+        testOnReturn: false
+        poolPreparedStatements: true
+        
+        # 配置监控统计拦截的filters，去掉后监控界面sql无法统计，'wall'用于防火墙
+        filters: stat,wall,log4j
+        maxPoolPreparedStatementPerConnectionSize: 20
+        useGlobalDataSourceStat: true
+        connectionProperties:
+			druid.stat.mergeSql=true;druid.stat.slowSqlMillis=500
+```
+
+可以发现，在上述配置中，我们通过`spring.datasource.type=com.alibaba.druid.pool.DruidDataSource`配置了数据源类型
+
+
+
+其对应于`DataSourceConfiguration`中第四个内部类`Generic`，`Generic`主要用于实现除三种默认数据源以外的其他类型数据源配置
+
+```java
+@Configuration(proxyBeanMethods = false)
+@ConditionalOnMissingBean(DataSource.class)
+@ConditionalOnProperty(name = "spring.datasource.type")
+static class Generic {
+
+    @Bean
+    DataSource dataSource(DataSourceProperties properties) {
+        return properties.initializeDataSourceBuilder().build();
+    }
+
+}
+```
+
+
+
+此时我们发现数据源可用，但是存在问题：对于我们配置的属性，并没有全部在自动注入的`Datasource`中体现
+
+![image-20210823211353083](.\图片\自动配置自定义数据源部分属性不生效)
+
+原因是对于自定义数据源配置，它并没有将所有属性与`DataSourceProperties`对象属性进行映射绑定，所以将存在部分属性无法与配置一致
+
+此时我们应当编写代码整合配置
+
+
+
+##### 3. 整合druid数据源
+
+```java
+public class DruidConfig {
+    
+    @ConfigurationProperties(prefix = "spring.datasource")
+    @Bean
+    public DataSource druid(){
+        return new DruidDataSource();
+    }
+}
+```
+
+通过`@ConfigurationProperties(prefix = "spring.datasource")`注解，将`spring.datasource`为前缀的属性配置注入到返回的`DataSource`中
+
+
+
+##### 4. 日志适配器
+
+此时调试时将出现报错，分析为在数据源配置的`yaml`文件中存在如下内容
+
+```yaml
+# 配置监控统计拦截的filters，去掉后监控界面sql无法统计，'wall'用于防火墙
+filters: stat,wall,log4j
+```
+
+
+
+报错原因是：`springBoot2.0`以后使用的日志框架已经不再使用`log4j`了。此时应该引入相应的适配器
+
+```xml
+<!--引入适配器-->
+<dependency>
+    <groupId>org.slf4j</groupId>
+    <artifactId>slf4j-log4j12</artifactId>
+</dependency>
+```
+
+
+
+## SpringBoot整合Mybatis
+
+由前面分析大致可知，我们先要引入自动配置依赖
+
+### 自动配置依赖
+
+```xml
+<dependency>
+    <groupId>org.mybatis.spring.boot</groupId>
+    <artifactId>mybatis-spring-boot-starter</artifactId>
+    <version>1.3.2</version>
+</dependency>
+```
+
+
+
+我们可以发现`Mybatis`自动配置依赖：
+
+- 是`xxx-spring-boot-starter`的自定义`starter`风格
+- 由配置对应`version`
+
+原因是，`SpringBoot`官方并没有实现整合`Mybatis`的自动配置`starter`，所以`Mybatis`官方就自己整了一个自定义`starter`
+
+
+
+我们继续分析这个自定义`starter`
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+        <!-- 引入 数据源自动配置starter -->
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.mybatis.spring.boot</groupId>
+        <artifactId>mybatis-spring-boot-autoconfigure</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.mybatis</groupId>
+        <artifactId>mybatis</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.mybatis</groupId>
+        <artifactId>mybatis-spring</artifactId>
+    </dependency>
+</dependencies>
+```
+
+我们发现其引入了`spring-boot-starter-jdbc`，结合上章分析，我们可以通过配置`spring.datasource`向IOC容器中注册`DataSource`
+
+
+
+### spring.factories配置文件
+
+由于`Mybatis`不是官方实现`starter`，所以在官方的`spring.factories`配置文件中没有配置其自动配置类，所以`mybatis`官方在其自定义`starter`中添加了自己的`spring.factories`配置文件
+
+```bash
+# Auto Configure
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+org.mybatis.spring.boot.autoconfigure.MybatisAutoConfiguration
+```
+
+它就表明了`mybatis`的自动配置类是`MybatisAutoConfiguration`
+
+
+
+### MybatisAutoConfiguration
+
+```java
+@org.springframework.context.annotation.Configuration
+@EnableConfigurationProperties(MybatisProperties.class)
+public class MybatisAutoConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean
+    public SqlSessionFactory sqlSessionFactory(DataSource dataSource) throws Exception {
+        // 省略...
+    }
+}
+```
+
+
+
+我们分析`MybatisAutoConfiguration`类中，我们主要关注两点
+
+- 添加了`@Configuration`，是一个配置类
+
+- 通过`@EnableConfigurationProperties`注解，向IOC容器注册`MybatisProperties`实例
+- 通过添加`@Bean`的`sqlSessionFactory`方法，向IOC容器注册`SqlSessionFactory`实例
+
+
+
+我们先分析一下`MybatisProperties`类
+
+#### MybatisProperties
+
+```java
+@ConfigurationProperties(prefix = MybatisProperties.MYBATIS_PREFIX)
+public class MybatisProperties {
+    // 属性前缀为mybatis
+    public static final String MYBATIS_PREFIX = "mybatis";
+    
+    // mybatis配置文件位置
+    private String configLocation;
+    
+    // mapper.xml配置文件位置
+    private String[] mapperLocations;
+    
+    // Configuration实例引用
+    private Configuration configuration;
+}
+```
+
+`MybatisProperties`类主要通过`@ConfigurationProperties`注解，注入了以`mybatis`为前缀的属性
+
+
+
+下面我们来分析一下`sqlSessionFactory`方法
+
+#### sqlSessionFactory方法
+
+```java
+// org.mybatis.spring.boot.autoconfigure.MybatisAutoConfiguration#sqlSessionFactory
+@Bean
+@ConditionalOnMissingBean
+public SqlSessionFactory sqlSessionFactory(DataSource dataSource) throws Exception {
+    // 1. 创建SqlSessionFactoryBean实例
+    SqlSessionFactoryBean factory = new SqlSessionFactoryBean();
+    // 设置数据源
+    factory.setDataSource(dataSource);
+    
+    // 2. 加载mybatis配置文件资源
+    // 如果配置了mybatis.configLocation属性，则加载对应，加载对应mybatis配置文件
+    if (StringUtils.hasText(this.properties.getConfigLocation())) {
+        // 保存到SqlSessionFactoryBean实例中
+        factory.setConfigLocation(this.resourceLoader.getResource(this.properties.getConfigLocation()));
+    }
+    
+    // 3. 获取Configuration
+    Configuration configuration = this.properties.getConfiguration();
+    if (configuration == null && !StringUtils.hasText(this.properties.getConfigLocation())) {
+        // 3.1 如果没有配置mybatis.configLocation，则创建默认Configuration
+        // 3.2 如果有配置mybatis.configLocation，则将通过SqlSessionFactoryBean#buildSqlSessionFactory中处理创建configuration实例
+        configuration = new Configuration();
+    }
+    
+    // 4.将Configuration保存到SqlSessionFactoryBean实例中
+    factory.setConfiguration(configuration);
+
+    // 4. 属性设置到SqlSessionFactoryBean实例
+    if (this.properties.getConfigurationProperties() != null) {
+      factory.setConfigurationProperties(this.properties.getConfigurationProperties());
+    }
+    if (!ObjectUtils.isEmpty(this.interceptors)) {
+      factory.setPlugins(this.interceptors);
+    }
+    if (this.databaseIdProvider != null) {
+      factory.setDatabaseIdProvider(this.databaseIdProvider);
+    }
+    if (StringUtils.hasLength(this.properties.getTypeAliasesPackage())) {
+      factory.setTypeAliasesPackage(this.properties.getTypeAliasesPackage());
+    }
+    if (StringUtils.hasLength(this.properties.getTypeHandlersPackage())) {
+      factory.setTypeHandlersPackage(this.properties.getTypeHandlersPackage());
+    }
+    if (!ObjectUtils.isEmpty(this.properties.resolveMapperLocations())) {
+      factory.setMapperLocations(this.properties.resolveMapperLocations());
+    }
+
+    // 5. 由SqlSessionFactoryBean#getObject获取SqlSessionFactory实例，注册到IOC容器中
+    return factory.getObject();
+}
+```
+
+`sqlSessionFactory`主要是构建了一个`SqlSessionFactoryBean`实例，并通过其`getObject`方法获取`SqlSessionFactory`实例注册到IOC容器中
+
+
+
+此时已经注册了`SqlSessionFactory`实例，那么我们将如何扫描对应的`mapper`接口，注册`mapper`代理对象到IOC容器中？
+
+`Mybatis`对于此提供了两种方案：
+
+- 通过在`mapper`接口上添加`@Mapper`注解实现
+- 通过在配置类上添加`@MapperScan`注解实现
+
+下面我们分别分析
+
