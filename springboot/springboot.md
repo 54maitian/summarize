@@ -416,6 +416,10 @@ public final class SpringFactoriesLoader {
 
 
 
+**注意**：获取`spring.factories`文件是在`target/classes/META-INF/`目录下，所以不是代码的`resources`目录表存在就可以加载，需要看是否打包进入
+
+
+
 **小结**
 
 我们通过`getCandidateConfigurations`方法，从`spring.factories`文件中提取了我们想要的自动装配的配置类的集合
@@ -3125,9 +3129,11 @@ public class MybatisAutoConfiguration {
 
 
 
+#### 1. 配置属性加载
+
 我们先分析一下`MybatisProperties`类
 
-#### MybatisProperties
+##### MybatisProperties
 
 ```java
 @ConfigurationProperties(prefix = MybatisProperties.MYBATIS_PREFIX)
@@ -3150,9 +3156,11 @@ public class MybatisProperties {
 
 
 
+#### 2. SqlSessionFactory创建
+
 下面我们来分析一下`sqlSessionFactory`方法
 
-#### sqlSessionFactory方法
+##### sqlSessionFactory方法
 
 ```java
 // org.mybatis.spring.boot.autoconfigure.MybatisAutoConfiguration#sqlSessionFactory
@@ -3211,6 +3219,8 @@ public SqlSessionFactory sqlSessionFactory(DataSource dataSource) throws Excepti
 
 
 
+#### 3. @Mapper加载
+
 此时已经注册了`SqlSessionFactory`实例，那么我们将如何扫描对应的`mapper`接口，注册`mapper`代理对象到IOC容器中？
 
 `Mybatis`对于此提供了两种方案：
@@ -3219,4 +3229,2114 @@ public SqlSessionFactory sqlSessionFactory(DataSource dataSource) throws Excepti
 - 通过在配置类上添加`@MapperScan`注解实现
 
 下面我们分别分析
+
+
+
+##### @Mapper
+
+```java
+// org.apache.ibatis.annotations.Mapper
+@Retention(RetentionPolicy.RUNTIME)
+@Target({ElementType.TYPE, ElementType.METHOD, ElementType.FIELD, ElementType.PARAMETER})
+public @interface Mapper {}
+```
+
+我们可以发现`@Mapper`注解只是一个空注解，用于标志使用，那么我们需要分析如何加载添加了`@Mapper`注解的`mapper`接口
+
+
+
+在`MybatisAutoConfiguration`自动配置类中，存在一个静态内部类`MapperScannerRegistrarNotFoundConfiguration`
+
+##### MapperScannerRegistrarNotFoundConfiguration
+
+```java
+//org.mybatis.spring.boot.autoconfigure.MybatisAutoConfiguration.MapperScannerRegistrarNotFoundConfiguration
+@org.springframework.context.annotation.Configuration
+@Import({ AutoConfiguredMapperScannerRegistrar.class })
+@ConditionalOnMissingBean(MapperFactoryBean.class)
+public static class MapperScannerRegistrarNotFoundConfiguration {
+   @PostConstruct
+   public void afterPropertiesSet() {
+   		logger.debug("No {} found.", MapperFactoryBean.class.getName());
+   }
+}
+```
+
+虽然`MapperScannerRegistrarNotFoundConfiguration`有个`afterPropertiesSet`方法，但是却没有做任何工作
+
+所以我们分析其上注解
+
+- `@Configuration`
+  - 标志为配置类
+- `@ConditionalOnMissingBean(MapperFactoryBean.class)`
+  - 在IOC容器中没有`MapperFactoryBean`类型`bean`时，将加载此配置类
+- `@Import({ AutoConfiguredMapperScannerRegistrar.class })`
+  - 通过`@Import`注解导入`AutoConfiguredMapperScannerRegistrar`类
+
+
+
+所以我们主要分析`AutoConfiguredMapperScannerRegistrar`类
+
+##### AutoConfiguredMapperScannerRegistrar
+
+```java
+// org.mybatis.spring.boot.autoconfigure.MybatisAutoConfiguration.AutoConfiguredMapperScannerRegistrar
+public static class AutoConfiguredMapperScannerRegistrar
+    implements BeanFactoryAware, ImportBeanDefinitionRegistrar, ResourceLoaderAware {
+
+    private BeanFactory beanFactory;
+
+    private ResourceLoader resourceLoader;
+
+    @Override
+    public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
+		// 创建一个ClassPathMapperScanner实例
+        ClassPathMapperScanner scanner = new ClassPathMapperScanner(registry);
+
+        try {
+            if (this.resourceLoader != null) {
+                // 设置类加载器
+                scanner.setResourceLoader(this.resourceLoader);
+            }
+			// 1. 获取扫描的包
+            List<String> packages = AutoConfigurationPackages.get(this.beanFactory);
+            if (logger.isDebugEnabled()) {
+                for (String pkg : packages) {
+                    logger.debug("Using auto-configuration base package '{}'", pkg);
+                }
+            }
+			
+            // 设置扫描的注解类
+            scanner.setAnnotationClass(Mapper.class);
+            // 2. 注册过滤器
+            scanner.registerFilters();
+            // 3. 进行包扫描
+            scanner.doScan(StringUtils.toStringArray(packages));
+        } catch (IllegalStateException ex) {
+            logger.debug("Could not determine auto-configuration package, automatic mapper scanning disabled.", ex);
+        }
+    }
+}
+```
+
+`AutoConfiguredMapperScannerRegistrar`实现了`ImportBeanDefinitionRegistrar`接口，所以将通过其`registerBeanDefinitions`注册`BeanDefinition`，在`registerBeanDefinitions`方法中，我们需要关注三点：
+
+- 获取扫描的包
+- 设置过滤注解类
+- 执行包扫描
+
+
+
+###### 3.1 获取扫描的包
+
+在上述代码中，我们发现其通过`AutoConfigurationPackages.get(this.beanFactory)`这样一段代码获取扫描的基础包
+
+实际调用
+
+```java
+public abstract class AutoConfigurationPackages {
+
+    private static final String BEAN = AutoConfigurationPackages.class.getName();
+
+    public static List<String> get(BeanFactory beanFactory) {
+        try {
+            // 从IOC容器中获取类型为BasePackages的bean，并调用其get方法
+            return beanFactory.getBean(BEAN, BasePackages.class).get();
+        }
+        catch (NoSuchBeanDefinitionException ex) {
+            throw new IllegalStateException("Unable to retrieve @EnableAutoConfiguration base packages");
+        }
+    }
+}
+```
+
+
+
+由上可知，该步骤执行了两个
+
+- 从IOC容器中获取`beanName`为`org.springframework.boot.autoconfigure.AutoConfigurationPackages`，类型为`BasePackages`的`bean`
+- 调用该`bean`的`get`方法
+
+
+
+那么这个`bean`是怎么注册到IOC容器？在我们前面分析主配置类时，在`@SpringBootApplication`注解中，通过`@AutoConfigurationPackage`注解中的`@Import`注解，注册了一个`AutoConfigurationPackages.Registrar.class`，在其`registerBeanDefinitions`方法调用中，向IOC容器注册了一个类型为`BasePackages`的`BeanDefinition`，且其对应的`packages`就是对应`@SpringBootApplication`注解中`@ComponentScan`的`basePackages`属性
+
+
+
+**结论：**所以我们在此获取的`packages`就是主配置类的`basePackages`属性值，并且，如果没有配置时，将取主配置类所在包
+
+
+
+###### 3.2 设置过滤类
+
+在上述代码中，先通过`scanner.setAnnotationClass(Mapper.class)`设置我们扫描的注解类型为`@Mapper`
+
+之后调用`scanner.registerFilters()`方法，我们分析
+
+```java
+// org.mybatis.spring.mapper.ClassPathMapperScanner#setAnnotationClass
+public void setAnnotationClass(Class<? extends Annotation> annotationClass) {
+    this.annotationClass = annotationClass;
+}
+
+// org.mybatis.spring.mapper.ClassPathMapperScanner#registerFilters
+public void registerFilters() {
+    if (this.annotationClass != null) {
+        addIncludeFilter(new AnnotationTypeFilter(this.annotationClass));
+        acceptAllInterfaces = false;
+    }
+}
+```
+
+可知，我们将通过包含过滤器，扫描主配置类所在包下的添加了`@Mapper`注解的类
+
+
+
+###### 3.3  进行包扫描
+
+在前面分析`Spring`整合`Mybatis`过程中，我们已经分析了`ClassPathMapperScanner#doScan`方法，其主要作用就是将扫描的接口类注册到IOC容器中，类型为`MapperFactoryBean`
+
+我们创建`ClassPathMapperScanner`时，并没有设置任何对应于`sqlSessionFactory、sqlSessionTemplate`的信息，所以将会将对应`BeanDefinition`的`autowireMode`设置为`AUTOWIRE_BY_TYPE`，并且我们通过`MybatisAutoConfiguration`注册了`SqlSessionFactory`，所以将自动执行其`setSqlSessionFactory`方法进行自动注入
+
+且对应`mapper.xml`配置将通过`Configuration#addMapper`调用时进行扫描，所以需要确保对应`mapper`接口和`.xml`配置文件层级一致
+
+
+
+#### 4. @MapperScan扫描
+
+可能需要对每个`Mapper`接口都添加`@Mapper`注解比较繁琐，那么此时的替代方案就是通过`@MapperScan`注解进行扫描
+
+```java
+// org.mybatis.spring.annotation.MapperScan
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.TYPE)
+@Import(MapperScannerRegistrar.class)
+public @interface MapperScan {
+    String[] value() default {};
+    String[] basePackages() default {};
+}
+```
+
+`@MapperScan`主要通过`@Import`注解导入了`MapperScannerRegistrar`类型实例，我们分析一下
+
+
+
+##### MapperScannerRegistrar
+
+```java
+// org.mybatis.spring.annotation.MapperScannerRegistrar
+public class MapperScannerRegistrar implements ImportBeanDefinitionRegistrar, ResourceLoaderAware {
+    @Override
+    public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
+
+        // 1. 获取@MapperScan注解属性
+        AnnotationAttributes annoAttrs = AnnotationAttributes.fromMap(importingClassMetadata.getAnnotationAttributes(MapperScan.class.getName()));
+
+        // 2. 创建ClassPathMapperScanner实例
+        ClassPathMapperScanner scanner = new ClassPathMapperScanner(registry);
+
+        // this check is needed in Spring 3.1
+        if (resourceLoader != null) {
+            scanner.setResourceLoader(resourceLoader);
+        }
+		
+        // 分析@MapperScan注解属性，获取扫描范围
+        Class<? extends Annotation> annotationClass = annoAttrs.getClass("annotationClass");
+        if (!Annotation.class.equals(annotationClass)) {
+            scanner.setAnnotationClass(annotationClass);
+        }
+
+        Class<?> markerInterface = annoAttrs.getClass("markerInterface");
+        if (!Class.class.equals(markerInterface)) {
+            scanner.setMarkerInterface(markerInterface);
+        }
+
+        Class<? extends BeanNameGenerator> generatorClass = annoAttrs.getClass("nameGenerator");
+        if (!BeanNameGenerator.class.equals(generatorClass)) {
+            scanner.setBeanNameGenerator(BeanUtils.instantiateClass(generatorClass));
+        }
+
+        Class<? extends MapperFactoryBean> mapperFactoryBeanClass = annoAttrs.getClass("factoryBean");
+        if (!MapperFactoryBean.class.equals(mapperFactoryBeanClass)) {
+            scanner.setMapperFactoryBean(BeanUtils.instantiateClass(mapperFactoryBeanClass));
+        }
+
+        scanner.setSqlSessionTemplateBeanName(annoAttrs.getString("sqlSessionTemplateRef"));
+        scanner.setSqlSessionFactoryBeanName(annoAttrs.getString("sqlSessionFactoryRef"));
+
+        List<String> basePackages = new ArrayList<String>();
+        for (String pkg : annoAttrs.getStringArray("value")) {
+            if (StringUtils.hasText(pkg)) {
+                basePackages.add(pkg);
+            }
+        }
+        for (String pkg : annoAttrs.getStringArray("basePackages")) {
+            if (StringUtils.hasText(pkg)) {
+                basePackages.add(pkg);
+            }
+        }
+        for (Class<?> clazz : annoAttrs.getClassArray("basePackageClasses")) {
+            basePackages.add(ClassUtils.getPackageName(clazz));
+        }
+        // 4. 注册过滤器
+        scanner.registerFilters();
+        // 5. 进行扫描
+        scanner.doScan(StringUtils.toStringArray(basePackages));
+    }
+}
+```
+
+
+
+`MapperScannerRegistrar`实现了`ImportBeanDefinitionRegistrar`接口，所以执行其`registerBeanDefinitions`方法，实际调用内容也就是通过`ClassPathMapperScanner`进行`mapper`扫描，我们不再重复分析
+
+
+
+## 动态数据源
+
+对于多数据库项目而言，经常不是只使用一个数据库，而对于`mybatis`操作而言，一个数据源对应一个数据库连接，我们进行`mapper`操作时，将从`DataSource`中获取`Connection`连接进行数据库操作，此时，将如何从多个数据库中进行数据获取？
+
+
+
+**思考**：想从多个数据库中进行数据获取，则需要多个数据库连接配置，则对应创建多个数据源`DataSource`对象
+
+但是在`Mybatis`分析中，对应于全局`Configuration`对象，其中保存了`DataSource`数据源实例，所以我们无法在操作时动态替换`Configuration`对象中的`DataSource`，那么就需要从另一个方面入手：
+
+使用个包装的`DataSource`实例，由它管理多个数据源对象，在进行数据库操作时，能动态获取所需数据源对象，并从中获取对应`Connection`实例进行数据库操作
+
+
+
+在`Spring-jdbc`包中，存在这样一个抽象类`AbstractRoutingDataSource`，我们查看其类图
+
+![image-20210831213047164](D:\学习整理\summarize\springboot\图片\AbstractRoutingDataSource类图)
+
+它实现了`javax.sql.DataSource`接口，所以它的子类可以作为一个`DataSource`实例保存到`Configuration`中
+
+
+
+### AbstractRoutingDataSource
+
+下面我们分析其代码
+
+```java
+// org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource
+public abstract class AbstractRoutingDataSource extends AbstractDataSource implements InitializingBean {
+    // 目标数据源
+	private Map<Object, Object> targetDataSources;
+    
+    // 转换的数据源
+	private Map<Object, DataSource> resolvedDataSources;
+    
+    // 默认数据源
+	private DataSource resolvedDefaultDataSource;
+}
+```
+
+
+
+### 1. 初始化数据源
+
+由于`AbstractRoutingDataSource`实现了`InitializingBean`接口，我们分析其`afterPropertiesSet`方法
+
+#### afterPropertiesSet
+
+```java
+// org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource#afterPropertiesSet
+public void afterPropertiesSet() {
+    // 确保targetDataSources不能为空
+    if (this.targetDataSources == null) {
+        throw new IllegalArgumentException("Property 'targetDataSources' is required");
+    }
+    // 创建resolvedDataSources
+    this.resolvedDataSources = new HashMap<>(this.targetDataSources.size());
+    // 遍历targetDataSources
+    this.targetDataSources.forEach((key, value) -> {
+        // 1. 通过resolveSpecifiedLookupKey方法进行key的转换，默认实现是不做处理的
+        Object lookupKey = resolveSpecifiedLookupKey(key);
+        // 2. 通过resolveSpecifiedDataSource进行数据源对象转换
+        DataSource dataSource = resolveSpecifiedDataSource(value);
+        // 3. 将转换结果保存到resolvedDataSources中
+        this.resolvedDataSources.put(lookupKey, dataSource);
+    });
+    if (this.defaultTargetDataSource != null) {
+        this.resolvedDefaultDataSource = resolveSpecifiedDataSource(this.defaultTargetDataSource);
+    }
+}
+```
+
+在`afterPropertiesSet`的处理中，主要是将`targetDataSources`集合中实例转换后保存到`resolvedDataSources`集合中，因为`targetDataSources`集合的`value`为`Object`类型，并不是`DataSource`实例
+
+
+
+### 2. 连接获取
+
+#### getConnection
+
+对于一个数据源来说，我们通常的操作就是通过`getConnection`方法获取数据连接`Connection`实例，下面我们查看一下`getConnection`方法
+
+```java
+// org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource#getConnection()
+public Connection getConnection() throws SQLException {
+    return determineTargetDataSource().getConnection();
+}
+```
+
+
+
+在`getConnection`方法中，它主要通过`determineTargetDataSource`方法获取数据源实例，再进行连接获取
+
+#### determineTargetDataSource
+
+```java
+protected DataSource determineTargetDataSource() {
+    Assert.notNull(this.resolvedDataSources, "DataSource router not initialized");
+    // 1. 通过determineCurrentLookupKey方法获取数据源对应key
+    Object lookupKey = determineCurrentLookupKey();
+    // 2. 由获取的key值，从resolvedDataSources中获取对应数据源
+    DataSource dataSource = this.resolvedDataSources.get(lookupKey);
+    // 3. 如果获取不到，则使用默认数据源
+    if (dataSource == null && (this.lenientFallback || lookupKey == null)) {
+        dataSource = this.resolvedDefaultDataSource;
+    }
+    if (dataSource == null) {
+        throw new IllegalStateException("Cannot determine target DataSource for lookup key [" + lookupKey + "]");
+    }
+    return dataSource;
+}
+```
+
+
+
+在`determineTargetDataSource`中，主要注意的方法就是`determineCurrentLookupKey`，我们由其获取数据源对应`key`值
+
+#### determineCurrentLookupKey
+
+```java
+// org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource#determineCurrentLookupKey
+protected abstract Object determineCurrentLookupKey();
+```
+
+
+
+`determineCurrentLookupKey`方法实质是一个抽象方法，由子类具体实现
+
+
+
+### 3.  如何使用
+
+#### 3.1 数据源连接配置
+
+对于多数据源而言，首先就是其对应有多个数据库连接信息，所以我们需要在配置文件中通过不同标志的`key`配置对应的连接信息，供后续数据源创建使用
+
+
+
+#### 3.2 注册数据源
+
+在配置了多个数据库连接信息后，我们就要提取对应配置信息，创建对应的数据源实例，注册到IOC容器中
+
+
+
+#### 3.3 创建AbstractRoutingDataSource实例
+
+由于我们需要通过`AbstractRoutingDataSource`实例进行多数据源的整合
+
+- 创建子类，继承`AbstractRoutingDataSource`，实现具体方法(视具体业务使用而定)
+- 在创建`AbstractRoutingDataSource`实例时，通过`setTargetDataSources`方法，将多数据源挂载到`AbstractRoutingDataSource`实例中
+- 由于此时存在多个数据源，创建`SqlSessionFactoryBean`时进行自动注入将会冲突，需要将`AbstractRoutingDataSource`实例添加`@Primary`注解首选
+
+
+
+#### 3.4 取消SpringBoot数据源自动配置
+
+通过在`@SpringBootApplication`注解中添加`exclude`属性，排除`DataSourceAutoConfiguration`自动配置类
+
+
+
+### 总结
+
+动态数据源，实际就是通过`AbstractRoutingDataSource`子类封装多个数据源，根据业务在`Mybatis`进行数据库操作时，从中获取不同的数据源进行处理
+
+具体对应的`key`值的存储于匹配，实际是根据项目而定，并不是固定的
+
+
+
+## SpringBoot缓存
+
+在`SpringBoot`中，我们可以简单的通过注解就可以实现方法返回结果的缓存
+
+
+
+### 依赖
+
+我们需要添加缓存自动配置`starter`
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-cache</artifactId>
+</dependency>
+```
+
+
+
+### Cache注解
+
+对于Spring缓存的使用，我们通常通过注解的方式进行引用，那么我们就来分析一下具体的缓存注解
+
+
+
+#### @Cacheable
+
+```java
+// org.springframework.cache.annotation.Cacheable
+@Target({ElementType.TYPE, ElementType.METHOD})
+public @interface Cacheable {
+    
+}
+```
+
+`@Cacheable`的作用：
+
+- 根据方法结合方法入参作为key信息，将方法返回结果进行缓存，在下次查询时，如果缓存中存在，则无需进行方法调用，直接从缓存中获取结果进行返回
+- 通常用于**查询**方法上
+
+
+
+#### @CachePut
+
+```java
+// org.springframework.cache.annotation.CachePut
+@Target({ElementType.TYPE, ElementType.METHOD})
+public @interface CachePut {
+    
+}
+```
+
+`@CachePut`的作用：
+
+- 使用该注解注释的方法，每次都会执行，并且将方法返回结果缓存
+- 通常用于**新增**方法
+- 目的是将新增数据缓存，供其他查询方法使用
+
+
+
+#### @CacheEvict
+
+```java
+// org.springframework.cache.annotation.CacheEvict
+@Target({ElementType.TYPE, ElementType.METHOD})
+public @interface CacheEvict {
+    
+}
+```
+
+`@CacheEvict`的作用：
+
+- 使用该注解注释的方法，每次都会执行，并且将缓存中指定key值清除
+- 通常用于**更新/删除**方法
+- 目的是将修改的数据从缓存中清除
+
+
+
+#### @Caching
+
+```java
+@Target({ElementType.TYPE, ElementType.METHOD})
+public @interface Caching {
+
+	Cacheable[] cacheable() default {};
+
+	CachePut[] put() default {};
+
+	CacheEvict[] evict() default {};
+
+}
+```
+
+从`@Caching`内容可知，`@Caching`注解主要用于整合上述的三个缓存注解，实现同一方法上可以使用多个相同的缓存注解
+
+
+
+#### 注解属性
+
+前面发现我在介绍缓存注解时，并没有一一介绍注解的相关属性，是因为上述三个缓存注解拥有大致相同的注解属性，所以结合一起进行介绍
+
+##### value/cacheNames
+
+```java
+@AliasFor("cacheNames")
+String[] value() default {};
+
+@AliasFor("value")
+String[] cacheNames() default {};
+```
+
+- `value`与`cacheNames`是等同的 
+
+- 主要用于标志当前缓存的命名空间
+- 可以是多个值
+
+
+
+##### key
+
+```java
+String key() default "";
+```
+
+- `key`用于标志缓存信息在缓存中的标志`key`键
+- `key`可以结合使用 `SpEL` 标签
+- `key`是可选的
+
+
+
+###### key对应SpEL标签
+
+在定义`key`时，我们可以使用方法参数及方法参数对应属性(不可以对应包装对象)作为`key`的内容
+
+| 参数     | 参数示例   | 对应表达式格式      | 表达式示例 |
+| -------- | ---------- | ------------------- | ---------- |
+| 普通参数 | Integer id | #参数名             | #id        |
+| 普通参数 | Integer id | #p序号，序号从0开始 | #p0        |
+| 包装对象 | User user  | #参数名.属性名      | #user.name |
+| 包装对象 | User user  | #p序号.属性名       | #p0.name   |
+
+
+
+###### Spring预设root对象使用
+
+| 属性名称    | 描述                        | 示例                 |
+| ----------- | --------------------------- | -------------------- |
+| methodName  | 当前方法名                  | #root.methodName     |
+| method      | 当前方法                    | #root.method.name    |
+| target      | 当前被调用的对象            | #root.target         |
+| targetClass | 当前被调用的对象的class     | #root.targetClass    |
+| args        | 当前方法参数组成的数组      | #root.args[0]        |
+| caches      | 当前被调用的方法使用的Cache | #root.caches[0].name |
+
+
+
+##### keyGenerator
+
+```java
+String keyGenerator() default "";
+```
+
+- 用于使用`beanName`引用IOC容器中`org.springframework.cache.interceptor.KeyGenerator`类型`bean`
+- 与`key`属性互斥，替代`key`的自定义生成规则，而是使用`KeyGenerator`实例自动生成对应`key`值
+
+
+
+##### cacheManager
+
+```java
+String cacheManager() default "";
+```
+
+- 用于使用`beanName`引用IOC容器中`org.springframework.cache.CacheManager`类型`bean`
+
+- 指定缓存管理器
+
+
+
+##### cacheResolver
+
+```java
+String cacheResolver() default "";
+```
+
+- 用于使用`beanName`引用IOC容器中`org.springframework.cache.interceptor.CacheResolver`类型`bean`
+- 指定获取解析器
+
+
+
+### Cache
+
+```java
+// 
+public interface Cache {
+    // 获取缓存name命名空间
+	String getName();
+    
+    // 返回缓存底层机制
+    Object getNativeCache();
+    
+    // 获取缓存中key对应值
+    <T> T get(Object key, @Nullable Class<T> type);
+    
+    // 向缓存中存储
+    void put(Object key, @Nullable Object value);
+}
+```
+
+
+
+### CacheManager
+
+```java
+// org.springframework.cache.CacheManager
+public interface CacheManager {
+	
+    // 根据name命名空间，获取缓存Cache实例
+	Cache getCache(String name);
+	
+    // 获取当前管理的缓存的集合
+	Collection<String> getCacheNames();
+
+}
+```
+
+`CacheManager`是Spring中用于管理缓存`Cache`的的顶级接口
+
+
+
+
+
+
+
+
+
+### 1. 缓存启用
+
+
+
+#### @EnableCaching
+
+在使用时，我们需要通过`@EnableCaching`注解来开启缓存功能，我们先分析此注解
+
+```java
+// org.springframework.cache.annotation.EnableCaching
+@Import(CachingConfigurationSelector.class)
+public @interface EnableCaching {
+    // 是否基于CGLIB动态代理，默认为false，表示使用JDK动态代理
+    boolean proxyTargetClass() default false;
+    
+    // 指示如何使用缓存
+    AdviceMode mode() default AdviceMode.PROXY;
+}
+```
+
+`@EnableCaching`注解主要通过`@Import`注解导入`CachingConfigurationSelector`类，我们继续分析
+
+
+
+#### CachingConfigurationSelector
+
+我们先查看其类图
+
+![image-20210907203006975](D:\学习整理\summarize\springboot\图片\CachingConfigurationSelector类图)
+
+我们可以发现其实现了`ImportSelector`接口，所以我主要分析其`selectImports`方法，其具体实现在其抽象父类`AdviceModeImportSelector`中
+
+##### AdviceModeImportSelector
+
+```java
+// org.springframework.context.annotation.AdviceModeImportSelector
+public abstract class AdviceModeImportSelector<A extends Annotation> implements ImportSelector {
+    
+    // 实现自ImportSelector接口
+    public final String[] selectImports(AnnotationMetadata importingClassMetadata) {
+        // 1. 获取引入的注解类，即@EnableCaching
+        Class<?> annType = GenericTypeResolver.resolveTypeArgument(getClass(), AdviceModeImportSelector.class);
+        // 2. 获取注解属性
+        AnnotationAttributes attributes = AnnotationConfigUtils.attributesFor(importingClassMetadata, annType);
+        // 3. 获取@EnableCaching注解的mode属性
+        AdviceMode adviceMode = attributes.getEnum(getAdviceModeAttributeName());
+        // 4. 调用重载selectImports方法
+        String[] imports = selectImports(adviceMode);
+        // 5. 返回导入类
+        return imports;
+    }
+}
+```
+
+在`selectImports`中，主要先获取`@EnableCaching`注解的`mode`属性，再调用重载`selectImports`方法
+
+
+
+具体重载在`CachingConfigurationSelector`类中
+
+```java
+// org.springframework.cache.annotation.CachingConfigurationSelector
+public class CachingConfigurationSelector extends AdviceModeImportSelector<EnableCaching> {
+
+    public String[] selectImports(AdviceMode adviceMode) {
+        switch (adviceMode) {
+            case PROXY:
+                return getProxyImports();
+            case ASPECTJ:
+                return getAspectJImports();
+            default:
+                return null;
+        }
+    }
+
+    private String[] getProxyImports() {
+        List<String> result = new ArrayList<>(3);
+        result.add(AutoProxyRegistrar.class.getName());
+        result.add(ProxyCachingConfiguration.class.getName());
+        if (jsr107Present && jcacheImplPresent) {
+            result.add(PROXY_JCACHE_CONFIGURATION_CLASS);
+        }
+        return StringUtils.toStringArray(result);
+    }
+
+    private String[] getAspectJImports() {
+        List<String> result = new ArrayList<>(2);
+        result.add(CACHE_ASPECT_CONFIGURATION_CLASS_NAME);
+        if (jsr107Present && jcacheImplPresent) {
+            result.add(JCACHE_ASPECT_CONFIGURATION_CLASS_NAME);
+        }
+        return StringUtils.toStringArray(result);
+    }
+}
+```
+
+由于默认`mode`属性值为`AdviceMode.PROXY`，所以默认走`getProxyImports`，将导入一下两个类
+
+- `AutoProxyRegistrar`
+- `ProxyCachingConfiguration`
+
+
+
+### 2. 引入解析
+
+#### AutoProxyRegistrar
+
+```java
+// org.springframework.context.annotation.ImportBeanDefinitionRegistrar
+public class AutoProxyRegistrar implements ImportBeanDefinitionRegistrar {
+    
+    public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
+        boolean candidateFound = false;
+        Set<String> annTypes = importingClassMetadata.getAnnotationTypes();
+        for (String annType : annTypes) {
+            AnnotationAttributes candidate = AnnotationConfigUtils.attributesFor(importingClassMetadata, annType);
+            if (candidate == null) {
+                continue;
+            }
+            Object mode = candidate.get("mode");
+            Object proxyTargetClass = candidate.get("proxyTargetClass");
+            if (mode != null && proxyTargetClass != null && AdviceMode.class == mode.getClass() &&
+                Boolean.class == proxyTargetClass.getClass()) {
+                candidateFound = true;
+                if (mode == AdviceMode.PROXY) {
+                    AopConfigUtils.registerAutoProxyCreatorIfNecessary(registry);
+                    if ((Boolean) proxyTargetClass) {
+                        AopConfigUtils.forceAutoProxyCreatorToUseClassProxying(registry);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+`AutoProxyRegistrar`实现了`ImportBeanDefinitionRegistrar`接口，所以我们主要关注其`registerBeanDefinitions`方法的处理，查看上述逻辑
+
+如果是`AdviceMode.PROXY`模式，主要工作为调用`AopConfigUtils#registerAutoProxyCreatorIfNecessary`
+
+结合我们对于AOP的分析，`AopConfigUtils#registerAutoProxyCreatorIfNecessary`方法的主要作用是向IOC容器注册了`AnnotationAwareAspectJAutoProxyCreator`类型`BeanDefinition`，其主要目的用于开启AOP功能，加载解析`Advisor`，并使用其进行代理创建
+
+
+
+#### ProxyCachingConfiguration
+
+```java
+// org.springframework.cache.annotation.ProxyCachingConfiguration
+public class ProxyCachingConfiguration extends AbstractCachingConfiguration {
+    @Bean(name = CacheManagementConfigUtils.CACHE_ADVISOR_BEAN_NAME)
+    @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+    public BeanFactoryCacheOperationSourceAdvisor cacheAdvisor() {
+        BeanFactoryCacheOperationSourceAdvisor advisor = new BeanFactoryCacheOperationSourceAdvisor();
+        advisor.setCacheOperationSource(cacheOperationSource());
+        advisor.setAdvice(cacheInterceptor());
+        if (this.enableCaching != null) {
+            advisor.setOrder(this.enableCaching.<Integer>getNumber("order"));
+        }
+        return advisor;
+    }
+
+    @Bean
+    @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+    public CacheOperationSource cacheOperationSource() {
+        return new AnnotationCacheOperationSource();
+    }
+
+    @Bean
+    @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+    public CacheInterceptor cacheInterceptor() {
+        CacheInterceptor interceptor = new CacheInterceptor();
+        interceptor.configure(this.errorHandler, this.keyGenerator, this.cacheResolver, this.cacheManager);
+        interceptor.setCacheOperationSource(cacheOperationSource());
+        return interceptor;
+    }
+}
+```
+
+`ProxyCachingConfiguration`是一个配置类，其主要通过`@Bean`注解向IOC容器导入了以下三个`bean`
+
+- `BeanFactoryCacheOperationSourceAdvisor`
+- `CacheOperationSource`
+- `CacheInterceptor`
+
+并且`BeanFactoryCacheOperationSourceAdvisor`中组合了其他两个`bean`
+
+
+
+### 3. 代理解析
+
+#### BeanFactoryCacheOperationSourceAdvisor
+
+我们先查看类图
+
+![image-20210907204529894](D:\学习整理\summarize\springboot\图片\BeanFactoryCacheOperationSourceAdvisor类图)
+
+我们发现`BeanFactoryCacheOperationSourceAdvisor`实现了`Advisor`接口，所以它将被`AnnotationAwareAspectJAutoProxyCreator`扫描进行处理
+
+基于前面AOP分析过程，我们需要关注`BeanFactoryCacheOperationSourceAdvisor`作为一个`Advisor`，它将匹配哪些方法，并且将如何进行代理工作
+
+
+
+#### 1. 进行方法匹配
+
+在前面分析中，我们了解，对于`Advisor`进行方法匹配，实际是通过其包装的`Pointcut`实现，所以我们查看`getPointcut`方法
+
+```java
+// org.springframework.cache.interceptor.BeanFactoryCacheOperationSourceAdvisor
+public class BeanFactoryCacheOperationSourceAdvisor extends AbstractBeanFactoryPointcutAdvisor {
+    
+    // 持有CacheOperationSource实例
+	private CacheOperationSource cacheOperationSource;
+    
+    // 通过匿名内部类创建了CacheOperationSourcePointcut的子类实例
+    private final CacheOperationSourcePointcut pointcut = new CacheOperationSourcePointcut() {
+		protected CacheOperationSource getCacheOperationSource() {
+			return cacheOperationSource;
+		}
+	};
+    
+    // 设置CacheOperationSource实例
+    public void setCacheOperationSource(CacheOperationSource cacheOperationSource) {
+		this.cacheOperationSource = cacheOperationSource;
+	}
+    
+    // 获取Pointcut
+    public Pointcut getPointcut() {
+		return this.pointcut;
+	}
+}
+```
+
+分析上述代码，我们发现其`pointcut`是一个通过匿名内部类创建的`CacheOperationSourcePointcut`的子类实例，其对应`CacheOperationSource`来源何处？
+
+在`ProxyCachingConfiguration#cacheAdvisor`配置方法中，通过`advisor.setCacheOperationSource(cacheOperationSource())`调用，实际获取的
+
+`CacheOperationSource`是`AnnotationCacheOperationSource`实例
+
+
+
+我们先分析一下`CacheOperationSourcePointcut`
+
+##### CacheOperationSourcePointcut
+
+```java
+// org.springframework.cache.interceptor.CacheOperationSourcePointcut
+abstract class CacheOperationSourcePointcut extends StaticMethodMatcherPointcut implements Serializable {
+    
+    protected abstract CacheOperationSource getCacheOperationSource();
+}
+```
+
+`CacheOperationSourcePointcut`是一个抽象类，其具有一个抽象方法，所以可以通过匿名内部类的方式创建其实例
+
+
+
+对于`Pointcut`的匹配过程，分为两步
+
+- 获取其`ClassFilter`进行匹配
+- 获取其`MethodMatcher`进行匹配
+
+我们一一分析
+
+
+
+###### 1. 通过ClassFilter#matches进行匹配
+
+`CacheOperationSourcePointcut`中`getClassFilter`在其父类`StaticMethodMatcherPointcut`中
+
+```java
+// org.springframework.aop.support.StaticMethodMatcherPointcut
+public abstract class StaticMethodMatcherPointcut extends StaticMethodMatcher implements Pointcut {
+    // 持有ClassFilter
+    private ClassFilter classFilter;
+    
+    // 构造默认设置classFilter
+    public StaticMethodMatcherPointcut() {
+        this.classFilter = ClassFilter.TRUE;
+    }
+    
+    // 获取ClassFilter
+    public ClassFilter getClassFilter() {
+        return this.classFilter;
+    }
+}
+
+// org.springframework.aop.ClassFilter
+public interface ClassFilter {
+    ClassFilter TRUE = TrueClassFilter.INSTANCE;
+
+    boolean matches(Class<?> var1);
+}
+
+// org.springframework.aop.TrueClassFilter
+final class TrueClassFilter implements ClassFilter, Serializable {
+    public static final TrueClassFilter INSTANCE = new TrueClassFilter();
+    
+    public boolean matches(Class<?> clazz) {
+        return true;
+    }
+}
+```
+
+分析上述代码，我们可知其`ClassFilter#matches`将固定返回`true`，所以匹配过程无关类，所有类都可以通过，那么我们继续分析`MethodMatcher`
+
+
+
+###### 2. 通过MethodMatcher#matches进行匹配
+
+在进行分析之前，我们先查看一下`CacheOperationSourcePointcut`类图
+
+![](D:\学习整理\summarize\springboot\图片\CacheOperationSourcePointcut类图)
+
+我们可以发现`CacheOperationSourcePointcut`本身实现了`MethodMatcher`接口
+
+
+
+```java
+// org.springframework.aop.support.StaticMethodMatcherPointcut
+public abstract class StaticMethodMatcherPointcut extends StaticMethodMatcher implements Pointcut {
+    public final MethodMatcher getMethodMatcher() {
+        return this;
+    }
+}
+```
+
+
+
+其`getMethodMatcher`返回其本身，所以我们分析其`matches`方法
+
+```java
+abstract class CacheOperationSourcePointcut extends StaticMethodMatcherPointcut implements Serializable {
+    // matches判断，实现自MethodMatcher接口
+    public boolean matches(Method method, Class<?> targetClass) {
+		CacheOperationSource cas = getCacheOperationSource();
+		return (cas != null && !CollectionUtils.isEmpty(cas.getCacheOperations(method, targetClass)));
+	}
+}
+```
+
+我们可以发现其通过`getCacheOperationSource`获取`CacheOperationSource`，再调用`CacheOperationSource#getCacheOperations`进行判断
+
+而`getCacheOperations`是其抽象方法，前面我们创建`CacheOperationSourcePointcut`实例是通过匿名内部类实现，所以最终获取的`CacheOperationSource`实例是`AnnotationCacheOperationSource`实例
+
+
+
+所以接下来的匹配判断工作就委托给了`AnnotationCacheOperationSource#getCacheOperations`
+
+##### AnnotationCacheOperationSource
+
+```java
+// org.springframework.cache.annotation.AnnotationCacheOperationSource
+public class AnnotationCacheOperationSource extends AbstractFallbackCacheOperationSource implements Serializable {
+    // 缓存注解解析器列表
+    private final Set<CacheAnnotationParser> annotationParsers;
+    
+    public AnnotationCacheOperationSource() {
+		this(true);
+	}
+    
+    public AnnotationCacheOperationSource(boolean publicMethodsOnly) {
+		this.publicMethodsOnly = publicMethodsOnly;
+        // 构造时默认赋值annotationParsers，存在一个SpringCacheAnnotationParser实例
+		this.annotationParsers = Collections.singleton(new SpringCacheAnnotationParser());
+	}
+}
+```
+
+
+
+我们分析其`getCacheOperations`方法，其具体实现在抽象父类`AbstractFallbackCacheOperationSource`中
+
+###### AbstractFallbackCacheOperationSource
+
+```java
+// org.springframework.cache.interceptor.AbstractFallbackCacheOperationSource
+public abstract class AbstractFallbackCacheOperationSource implements CacheOperationSource {
+    
+    public Collection<CacheOperation> getCacheOperations(Method method, @Nullable Class<?> targetClass) {
+        // 排除Object类中方法
+		if (method.getDeclaringClass() == Object.class) {
+			return null;
+		}
+		
+        // 封装缓存cacheKey
+		Object cacheKey = getCacheKey(method, targetClass);
+        // 尝试从缓存中获取
+		Collection<CacheOperation> cached = this.attributeCache.get(cacheKey);
+
+		if (cached != null) {
+			return (cached != NULL_CACHING_ATTRIBUTE ? cached : null);
+		}
+		else {
+            // 调用computeCacheOperations方法解析
+			Collection<CacheOperation> cacheOps = computeCacheOperations(method, targetClass);
+			if (cacheOps != null) {
+				this.attributeCache.put(cacheKey, cacheOps);
+			}
+			else {
+				this.attributeCache.put(cacheKey, NULL_CACHING_ATTRIBUTE);
+			}
+			return cacheOps;
+		}
+	}
+    
+    
+    private Collection<CacheOperation> computeCacheOperations(Method method, @Nullable Class<?> targetClass) {
+        // 主要关注逻辑，其他逻辑省略
+        Collection<CacheOperation> opDef = findCacheOperations(specificMethod);
+		if (opDef != null) {
+			return opDef;
+		}
+    }
+    
+    // 具体处理
+    protected Collection<CacheOperation> findCacheOperations(Method method) {
+		return determineCacheOperations(parser -> parser.parseCacheAnnotations(method));
+	}
+    
+    protected Collection<CacheOperation> determineCacheOperations(CacheOperationProvider provider) {
+        Collection<CacheOperation> ops = null;
+        for (CacheAnnotationParser parser : this.annotationParsers) {
+            // 遍历CacheAnnotationParser进行解析
+            Collection<CacheOperation> annOps = provider.getCacheOperations(parser);
+            if (annOps != null) {
+                if (ops == null) {
+                    ops = annOps;
+                }
+                else {
+                    Collection<CacheOperation> combined = new ArrayList<>(ops.size() + annOps.size());
+                    combined.addAll(ops);
+                    combined.addAll(annOps);
+                    ops = combined;
+                }
+            }
+        }
+        return ops;
+    }
+}
+```
+
+分析`AbstractFallbackCacheOperationSource#getCacheOperations`可知，其最终将判断委托给了`CacheAnnotationParser`进行解析处理，其实际是调用
+
+`SpringCacheAnnotationParser#parseCacheAnnotations`
+
+
+
+###### SpringCacheAnnotationParser
+
+```java
+// org.springframework.cache.annotation.SpringCacheAnnotationParser
+public class SpringCacheAnnotationParser implements CacheAnnotationParser, Serializable {
+    private static final Set<Class<? extends Annotation>> CACHE_OPERATION_ANNOTATIONS = new LinkedHashSet<>(8);
+
+	static {
+		CACHE_OPERATION_ANNOTATIONS.add(Cacheable.class);
+		CACHE_OPERATION_ANNOTATIONS.add(CacheEvict.class);
+		CACHE_OPERATION_ANNOTATIONS.add(CachePut.class);
+		CACHE_OPERATION_ANNOTATIONS.add(Caching.class);
+	}
+    
+    public Collection<CacheOperation> parseCacheAnnotations(Method method) {
+		DefaultCacheConfig defaultConfig = new DefaultCacheConfig(method.getDeclaringClass());
+        // 调用链1
+		return parseCacheAnnotations(defaultConfig, method);
+	}
+
+	@Nullable
+	private Collection<CacheOperation> parseCacheAnnotations(DefaultCacheConfig cachingConfig, AnnotatedElement ae) {
+		Collection<CacheOperation> ops = parseCacheAnnotations(cachingConfig, ae, false);
+		if (ops != null && ops.size() > 1) {
+			// 调用链2
+			Collection<CacheOperation> localOps = parseCacheAnnotations(cachingConfig, ae, true);
+			if (localOps != null) {
+				return localOps;
+			}
+		}
+		return ops;
+	}
+
+	@Nullable
+	private Collection<CacheOperation> parseCacheAnnotations(
+			DefaultCacheConfig cachingConfig, AnnotatedElement ae, boolean localOnly) {
+		// 调用链3
+		Collection<? extends Annotation> anns = (localOnly ?
+				AnnotatedElementUtils.getAllMergedAnnotations(ae, CACHE_OPERATION_ANNOTATIONS) :
+				AnnotatedElementUtils.findAllMergedAnnotations(ae, CACHE_OPERATION_ANNOTATIONS));
+		if (anns.isEmpty()) {
+			return null;
+		}
+
+		final Collection<CacheOperation> ops = new ArrayList<>(1);
+		anns.stream().filter(ann -> ann instanceof Cacheable).forEach(
+				ann -> ops.add(parseCacheableAnnotation(ae, cachingConfig, (Cacheable) ann)));
+		anns.stream().filter(ann -> ann instanceof CacheEvict).forEach(
+				ann -> ops.add(parseEvictAnnotation(ae, cachingConfig, (CacheEvict) ann)));
+		anns.stream().filter(ann -> ann instanceof CachePut).forEach(
+				ann -> ops.add(parsePutAnnotation(ae, cachingConfig, (CachePut) ann)));
+		anns.stream().filter(ann -> ann instanceof Caching).forEach(
+				ann -> parseCachingAnnotation(ae, cachingConfig, (Caching) ann, ops));
+		return ops;
+	}
+}
+```
+
+可知`parseCacheAnnotations`具体判断依据就是方法上是否有如下注解
+
+- `Cacheable`
+- `CacheEvict`
+- `CachePut`
+- `Caching`
+
+注解解析后封装为`CacheOperation`实例
+
+
+
+###### CacheOperation
+
+```java
+// org.springframework.cache.interceptor.CacheOperation
+public abstract class CacheOperation implements BasicOperation {
+    private final String name;
+
+    private final Set<String> cacheNames;
+
+    private final String key;
+
+    private final String keyGenerator;
+
+    private final String cacheManager;
+
+    private final String cacheResolver;
+}
+```
+
+`CacheOperation`实际就是将对应缓存注解的属性信息进行封装
+
+
+
+##### 小结
+
+所以对于判断`BeanFactoryCacheOperationSourceAdvisor`这个`Advisor`适配的的方法，其实际就是判断是否有SpringBoot 缓存相关的注解
+
+
+
+#### 2. 代理方法的处理
+
+前面分析了`Advisor`将适配哪些方法，并对其进行代理，现在我们将分析代理的具体处理逻辑
+
+由于`BeanFactoryCacheOperationSourceAdvisor`是一个`PointcutAdvisor`子类，所以根据AOP分析可知，我们应该关注其封装的`Advice`
+
+结合前面`ProxyCachingConfiguration`中代码：`advisor.setAdvice(cacheInterceptor())`，所以我们应该具体分析`CacheInterceptor`
+
+
+
+##### CacheInterceptor
+
+```java
+// org.springframework.cache.interceptor.CacheInterceptor
+public class CacheInterceptor extends CacheAspectSupport implements MethodInterceptor, Serializable {
+
+    @Override
+    @Nullable
+    public Object invoke(final MethodInvocation invocation) throws Throwable {
+        Method method = invocation.getMethod();
+		
+        // 1. 通过lambda表达式，创建一个CacheOperationInvoker，其invoke方法主要触发调用原始方法
+        CacheOperationInvoker aopAllianceInvoker = () -> {
+            try {
+                return invocation.proceed();
+            }
+            catch (Throwable ex) {
+                throw new CacheOperationInvoker.ThrowableWrapper(ex);
+            }
+        };
+
+        try {
+            // 2. 调用重载invoke方法
+            return execute(aopAllianceInvoker, invocation.getThis(), method, invocation.getArguments());
+        }
+        catch (CacheOperationInvoker.ThrowableWrapper th) {
+            throw th.getOriginal();
+        }
+    }
+
+}
+```
+
+`CacheInterceptor`实现了`MethodInterceptor`接口，所以需要分析其`invoke`方法
+
+
+
+我们查看重载的invoke方法，具体代码在其父类`CacheAspectSupport`中
+
+```java
+// org.springframework.cache.interceptor.CacheAspectSupport#execute
+protected Object execute(CacheOperationInvoker invoker, Object target, Method method, Object[] args) {
+    if (this.initialized) {
+        // 1. 获取目标类Class
+        Class<?> targetClass = getTargetClass(target);
+        // 2. 获取CacheOperationSource，当前获取为AnnotationCacheOperationSource实例
+        CacheOperationSource cacheOperationSource = getCacheOperationSource();
+        if (cacheOperationSource != null) {
+            // 3. 调用getCacheOperations获取对于缓存注解的解析结果，具体分析在前面
+            Collection<CacheOperation> operations = cacheOperationSource.getCacheOperations(method, targetClass);
+            if (!CollectionUtils.isEmpty(operations)) {
+                // 4.1 通过CacheOperationContexts构造，从缓存中获取对应缓存实例
+                // 4.2 进行缓存数据处理
+                return execute(invoker, method,
+                               new CacheOperationContexts(operations, method, args, target, targetClass));
+            }
+        }
+    }
+
+    return invoker.invoke();
+}
+```
+
+在`execute`方法中，将调用另一个重载`execute`方法，此方法用于对缓存数据的处理
+
+而在此之前，我们需要关注缓存`Cache`实例的获取，它在对应`CacheOperationContexts`的构造中
+
+
+
+##### 2.1 缓存的获取
+
+```java
+// 1. 先分析CacheOperationContexts
+// org.springframework.cache.interceptor.CacheAspectSupport.CacheOperationContexts
+private class CacheOperationContexts {
+    
+    // 存储多个CacheOperationContext
+	private final MultiValueMap<Class<? extends CacheOperation>, CacheOperationContext> contexts;
+    
+    public CacheOperationContexts(Collection<? extends CacheOperation> operations, Method method,
+                                  Object[] args, Object target, Class<?> targetClass) {
+
+        this.contexts = new LinkedMultiValueMap<>(operations.size());
+        for (CacheOperation op : operations) {
+            // 遍历当前CacheOperation集合
+            // 通过getOperationContext方法，获取CacheOperationContext
+            this.contexts.add(op.getClass(), getOperationContext(op, method, args, target, targetClass));
+        }
+        this.sync = determineSyncFlag(method);
+    }
+}
+
+
+// 2. 调用getOperationContext获取CacheOperationContext实例
+// org.springframework.cache.interceptor.CacheAspectSupport#getOperationContext
+protected CacheOperationContext getOperationContext(
+    CacheOperation operation, Method method, Object[] args, Object target, Class<?> targetClass) {
+	// 通过getCacheOperationMetadata获取CacheOperationMetadata实例
+    CacheOperationMetadata metadata = getCacheOperationMetadata(operation, method, targetClass);
+    // 通过构造创建CacheOperationContext实例
+    return new CacheOperationContext(metadata, args, target);
+}
+
+
+// 3. 通过getCacheOperationMetadata
+// org.springframework.cache.interceptor.CacheAspectSupport#getCacheOperationMetadata
+protected CacheOperationMetadata getCacheOperationMetadata(
+    CacheOperation operation, Method method, Class<?> targetClass) {
+	// 1. 获取CacheOperationCacheKey
+    CacheOperationCacheKey cacheKey = new CacheOperationCacheKey(operation, method, targetClass);
+    
+    // 2. 尝试从缓存中获取
+    CacheOperationMetadata metadata = this.metadataCache.get(cacheKey);
+    if (metadata == null) {
+        // 缓存未命中
+        
+        // 3. 获取对应KeyGenerator-key的生成器
+        KeyGenerator operationKeyGenerator;
+        // 3.1 如果CacheOperation中KeyGenerator属性值
+        if (StringUtils.hasText(operation.getKeyGenerator())) {
+            // 3.2 如有值，则以对应值为beanName从容器中获取KeyGenerator
+            operationKeyGenerator = getBean(operation.getKeyGenerator(), KeyGenerator.class);
+        }
+        else {
+            operationKeyGenerator = getKeyGenerator();
+        }
+        
+        // 4. 获取CacheResolver缓存解析器
+        CacheResolver operationCacheResolver;
+        if (StringUtils.hasText(operation.getCacheResolver())) {
+            operationCacheResolver = getBean(operation.getCacheResolver(), CacheResolver.class);
+        }
+        else if (StringUtils.hasText(operation.getCacheManager())) {
+            CacheManager cacheManager = getBean(operation.getCacheManager(), CacheManager.class);
+            operationCacheResolver = new SimpleCacheResolver(cacheManager);
+        }
+        else {
+            operationCacheResolver = getCacheResolver();
+            Assert.state(operationCacheResolver != null, "No CacheResolver/CacheManager set");
+        }
+        metadata = new CacheOperationMetadata(operation, method, targetClass,
+                                              operationKeyGenerator, operationCacheResolver);
+        this.metadataCache.put(cacheKey, metadata);
+    }
+    return metadata;
+}
+
+
+
+
+// 4. 构建CacheOperationContext实例
+protected class CacheOperationContext implements CacheOperationInvocationContext<CacheOperation> {
+    // 封装Cache集合
+    private final Collection<? extends Cache> caches;
+
+    public CacheOperationContext(CacheOperationMetadata metadata, Object[] args, Object target) {
+        this.metadata = metadata;
+        this.args = extractArgs(metadata.method, args);
+        this.target = target;
+        // 通过CacheAspectSupport#getCaches方法获取Cache集合
+        // 由于通过CacheOperationContext是CacheAspectSupport的内部类，所以通过 类名.this 区分调用
+        this.caches = CacheAspectSupport.this.getCaches(this, metadata.cacheResolver);
+        this.cacheNames = createCacheNames(this.caches);
+    }
+}
+```
+
+
+
+在上述分析中，最终可知通过`CacheAspectSupport#getCaches`方法调用获取`Cache`集合
+
+###### getCaches
+
+```java
+// org.springframework.cache.interceptor.CacheAspectSupport#getCaches
+protected Collection<? extends Cache> getCaches(
+    CacheOperationInvocationContext<CacheOperation> context, CacheResolver cacheResolver) {
+
+    Collection<? extends Cache> caches = cacheResolver.resolveCaches(context);
+    return caches;
+}
+
+
+// org.springframework.cache.interceptor.AbstractCacheResolver#resolveCaches
+public Collection<? extends Cache> resolveCaches(CacheOperationInvocationContext<?> context) {
+    // 1. 获取命名空间names
+    Collection<String> cacheNames = getCacheNames(context);
+    if (cacheNames == null) {
+        return Collections.emptyList();
+    }
+    Collection<Cache> result = new ArrayList<>(cacheNames.size());
+    for (String cacheName : cacheNames) {
+        // 2.1 先通过getCacheManager获取到CacheManager
+        // 2.2 通过CacheManager#getCache获取命名空间对应Cache实例
+        Cache cache = getCacheManager().getCache(cacheName);
+        if (cache == null) {
+            throw new IllegalArgumentException("Cannot find cache named '" +
+                                               cacheName + "' for " + context.getOperation());
+        }
+        result.add(cache);
+    }
+    return result;
+}
+```
+
+
+
+###### 小结
+
+经过上述分析，我们可知
+
+- 将通过`CacheManager#getCache`获取`name`命名空间对应`Cache`实例，所以是通过`CacheManager`来实现对应不同命名空间对应的`Cache`实例的管理
+- 获取到的`Cache`实例封装在`CacheOperationContexts`实例中
+
+`CacheOperationContexts`内容具体体现
+
+![image-20210909202030869](D:\学习整理\summarize\springboot\图片\CacheOperationContexts调试示例)
+
+
+
+
+
+##### 2.2 缓存的处理
+
+我们继续分析获取缓存`Cache`之后，将如何进行数据处理
+
+```java
+// org.springframework.cache.interceptor.CacheAspectSupport#execute
+private Object execute(final CacheOperationInvoker invoker, Method method, CacheOperationContexts contexts) {
+
+    // 1. 处理任何提前驱逐，根据@CacheEvict注解信息
+    processCacheEvicts(contexts.get(CacheEvictOperation.class), true,
+                       CacheOperationExpressionEvaluator.NO_RESULT);
+
+    // 2. 根据@Cacheable注解信息，检查我们是否有符合条件的缓存项
+    Cache.ValueWrapper cacheHit = findCachedItem(contexts.get(CacheableOperation.class));
+
+    // Collect puts from any @Cacheable miss, if no cached item is found
+    List<CachePutRequest> cachePutRequests = new LinkedList<>();
+    if (cacheHit == null) {
+        collectPutRequests(contexts.get(CacheableOperation.class),
+                           CacheOperationExpressionEvaluator.NO_RESULT, cachePutRequests);
+    }
+
+    Object cacheValue;
+    Object returnValue;
+
+    // 3. 缓存判断
+    if (cacheHit != null && !hasCachePut(contexts)) {
+        // 3.1 缓存命中，从缓存中获取方法结果
+        cacheValue = cacheHit.get();
+        returnValue = wrapCacheValue(method, cacheValue);
+    }
+    else {
+        // 3.2 如果我们没有缓存命中，则调用该实例方法
+        returnValue = invokeOperation(invoker);
+        cacheValue = unwrapReturnValue(returnValue);
+    }
+
+    // 4. 收集任何明确的@CachePuts注解信息
+    collectPutRequests(contexts.get(CachePutOperation.class), cacheValue, cachePutRequests);
+
+    // 5. 处理来自@CachePut 或@Cacheable 未命中的任何收集的放置请求
+    for (CachePutRequest cachePutRequest : cachePutRequests) {
+        // 根据@CachePut 或@Cacheable注解信息，将方法结果进行缓存
+        cachePutRequest.apply(cacheValue);
+    }
+
+    // 6. 处理任何后置驱逐，根据@CacheEvict注解信息
+    processCacheEvicts(contexts.get(CacheEvictOperation.class), false, cacheValue);
+
+    // 7. 返回结果
+    return returnValue;
+}
+```
+
+上面代码包括了对于`@Cacheable、@CachePut、@CacheEvict`的处理，我们一一分析
+
+
+
+###### processCacheEvicts
+
+`processCacheEvicts`方法用于处理`@CacheEvict`注解信息，并且我们发现其有两次调用，这时根据`@CacheEvict`注解中`beforeInvocation`属性控制
+
+```java
+boolean beforeInvocation() default false;
+```
+
+`beforeInvocation`默认为`false`，表示在 方法调用/缓存命中 之后进行调用；而`beforeInvocation`设置为true时，则表示在方法调用之前清理缓存，无论方法是否调用异常，缓存都将被清理
+
+
+
+我们分析`processCacheEvicts`具体调用
+
+```java
+// org.springframework.cache.interceptor.CacheAspectSupport#processCacheEvicts
+private void processCacheEvicts(
+    Collection<CacheOperationContext> contexts, boolean beforeInvocation, @Nullable Object result) {
+    for (CacheOperationContext context : contexts) {
+        // 1. 获取具体CacheEvictOperation实例进行判断，其包装了@CacheEvict注解信息
+        CacheEvictOperation operation = (CacheEvictOperation) context.metadata.operation;
+        if (beforeInvocation == operation.isBeforeInvocation() && isConditionPassing(context, result)) {
+            // 2. 判断通过，则调用performCacheEvict进行缓存清理
+            performCacheEvict(context, operation, result);
+        }
+    }
+}
+
+// org.springframework.cache.interceptor.CacheAspectSupport#performCacheEvict
+private void performCacheEvict(
+    CacheOperationContext context, CacheEvictOperation operation, @Nullable Object result) {
+
+    Object key = null;
+    for (Cache cache : context.getCaches()) {
+        // 对应@CacheEvict注解allEntries属性
+        if (operation.isCacheWide()) {
+            logInvalidating(context, operation, null);
+            // 此处进行缓存的整个清理
+            doClear(cache);
+        }
+        else {
+            if (key == null) {
+                // 获取具体缓存key
+                key = generateKey(context, result);
+            }
+            logInvalidating(context, operation, key);
+            // 清除具体key对应缓存数据
+            doEvict(cache, key);
+        }
+    }
+}
+
+// 根据key，清理缓存Cache中对应缓存数据
+// org.springframework.cache.interceptor.AbstractCacheInvoker#doEvict
+protected void doEvict(Cache cache, Object key) {
+    try {
+        cache.evict(key);
+    }
+    catch (RuntimeException ex) {
+        getErrorHandler().handleCacheEvictError(ex, cache, key);
+    }
+}
+
+// 清除缓存Cache实例中所有缓存数据
+// org.springframework.cache.interceptor.AbstractCacheInvoker#doClear
+protected void doClear(Cache cache) {
+    try {
+        cache.clear();
+    }
+    catch (RuntimeException ex) {
+        getErrorHandler().handleCacheClearError(ex, cache);
+    }
+}
+```
+
+经过上述分析可知，具体缓存清理动作，由缓存`Cache`实例处理
+
+
+
+###### findCachedItem
+
+`findCachedItem`用于从缓存`Cache`中获取具体的缓存数据
+
+```java
+// org.springframework.cache.interceptor.CacheAspectSupport#findCachedItem
+private Cache.ValueWrapper findCachedItem(Collection<CacheOperationContext> contexts) {
+    Object result = CacheOperationExpressionEvaluator.NO_RESULT;
+    for (CacheOperationContext context : contexts) {
+        if (isConditionPassing(context, result)) {
+            // 1. 获取缓存key
+            Object key = generateKey(context, result);
+            // 2. 获取对应缓存数据
+            Cache.ValueWrapper cached = findInCaches(context, key);
+            if (cached != null) {
+                return cached;
+            }
+            else {
+                if (logger.isTraceEnabled()) {
+                    logger.trace("No cache entry for key '" + key + "' in cache(s) " + context.getCacheNames());
+                }
+            }
+        }
+    }
+    return null;
+}
+
+// org.springframework.cache.interceptor.CacheAspectSupport#findInCaches
+private Cache.ValueWrapper findInCaches(CacheOperationContext context, Object key) {
+    for (Cache cache : context.getCaches()) {
+        // 调用doGet获取缓存数据
+        Cache.ValueWrapper wrapper = doGet(cache, key);
+        if (wrapper != null) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("Cache entry for key '" + key + "' found in cache '" + cache.getName() + "'");
+            }
+            return wrapper;
+        }
+    }
+    return null;
+}
+
+// org.springframework.cache.interceptor.AbstractCacheInvoker#doGet
+protected Cache.ValueWrapper doGet(Cache cache, Object key) {
+    try {
+        return cache.get(key);
+    }
+    catch (RuntimeException ex) {
+        getErrorHandler().handleCacheGetError(ex, cache, key);
+        return null;  // If the exception is handled, return a cache miss
+    }
+}
+```
+
+分析可知，实质是通过`Cache#get`进行缓存数据的获取
+
+
+
+###### CachePutRequest#apply
+
+`CachePutRequest#apply`用户将方法防护结果缓存
+
+```java
+// org.springframework.cache.interceptor.CacheAspectSupport.CachePutRequest#apply
+public void apply(@Nullable Object result) {
+    if (this.context.canPutToCache(result)) {
+        for (Cache cache : this.context.getCaches()) {
+            doPut(cache, this.key, result);
+        }
+    }
+}
+
+// org.springframework.cache.interceptor.AbstractCacheInvoker#doPut
+protected void doPut(Cache cache, Object key, @Nullable Object result) {
+    try {
+        cache.put(key, result);
+    }
+    catch (RuntimeException ex) {
+        getErrorHandler().handleCachePutError(ex, cache, key, result);
+    }
+}
+```
+
+经过上述可知，实质是通过`Cache#put`进行数据缓存
+
+
+
+###### 小结
+
+经过上述分析可知，对于缓存的处理，实质底层是通过封装在`CacheOperationContext`中的`Cache`实例进行缓存处理
+
+
+
+### 4. CacheManager分析
+
+在上述分析中，我们分析具体缓存信息，封装为`CacheOperation`实例，并通过对应`name`从`CacheManager`中获取命名空间对应`Cache`实例，之后再通过`Cache`实例进行缓存的处理，那么这个`CacheManager`实例从何而来？如何从IOC容器中获取？我们一一分析
+
+
+
+我们说使用`SpringCache`，需要引入`spring-boot-starter-cache`这个`starter`依赖，其中它引入了`spring-boot-autoconfigure`
+
+在`spring-boot-autoconfigure`项目的`spring.factories`文件中，对于`EnableAutoConfiguration`自动配置中，存在一个类，它就是`CacheAutoConfiguration`
+
+
+
+#### 4.1 CacheManager从何而来
+
+##### CacheAutoConfiguration
+
+```java
+// org.springframework.boot.autoconfigure.cache.CacheAutoConfiguration
+@Configuration(proxyBeanMethods = false)
+@ConditionalOnClass(CacheManager.class)
+@ConditionalOnBean(CacheAspectSupport.class)
+@ConditionalOnMissingBean(value = CacheManager.class, name = "cacheResolver")
+@EnableConfigurationProperties(CacheProperties.class)
+@AutoConfigureAfter({ CouchbaseAutoConfiguration.class, HazelcastAutoConfiguration.class,
+		HibernateJpaAutoConfiguration.class, RedisAutoConfiguration.class })
+@Import({ CacheConfigurationImportSelector.class, CacheManagerEntityManagerFactoryDependsOnPostProcessor.class })
+public class CacheAutoConfiguration {
+    
+    
+    // 静态内部类CacheConfigurationImportSelector
+    static class CacheConfigurationImportSelector implements ImportSelector {
+		@Override
+		public String[] selectImports(AnnotationMetadata importingClassMetadata) {
+            // 1. 获取CacheType枚举对应SpringBoot支持的缓存类型
+			CacheType[] types = CacheType.values();
+			String[] imports = new String[types.length];
+			for (int i = 0; i < types.length; i++) {
+                // 2. 获取不同缓存类型对应的配置类
+				imports[i] = CacheConfigurations.getConfigurationClass(types[i]);
+			}
+			return imports;
+		}
+
+	}
+}  
+```
+
+在`CacheAutoConfiguration`中，我们首先需要关注的是其通过`@Import`注解导入了`CacheConfigurationImportSelector`类，`CacheConfigurationImportSelector`类是`CacheAutoConfiguration`的静态内部类，其实现了`ImportSelector`接口，所以我们查看其`selectImports`
+
+方法
+
+
+
+在`selectImports`中，主要通过`CacheConfigurations#getConfigurationClass`获取缓存配置类，我们分析一下
+
+##### CacheConfigurations
+
+```java
+// org.springframework.boot.autoconfigure.cache.CacheConfigurations
+final class CacheConfigurations {
+
+	private static final Map<CacheType, Class<?>> MAPPINGS;
+
+	static {
+		// 静态初始化设置缓存类型对应缓存配置类
+		Map<CacheType, Class<?>> mappings = new EnumMap<>(CacheType.class);
+		mappings.put(CacheType.GENERIC, GenericCacheConfiguration.class);
+		mappings.put(CacheType.EHCACHE, EhCacheCacheConfiguration.class);
+		mappings.put(CacheType.HAZELCAST, HazelcastCacheConfiguration.class);
+		mappings.put(CacheType.INFINISPAN, InfinispanCacheConfiguration.class);
+		mappings.put(CacheType.JCACHE, JCacheCacheConfiguration.class);
+		mappings.put(CacheType.COUCHBASE, CouchbaseCacheConfiguration.class);
+		mappings.put(CacheType.REDIS, RedisCacheConfiguration.class);
+		mappings.put(CacheType.CAFFEINE, CaffeineCacheConfiguration.class);
+		mappings.put(CacheType.SIMPLE, SimpleCacheConfiguration.class);
+		mappings.put(CacheType.NONE, NoOpCacheConfiguration.class);
+		MAPPINGS = Collections.unmodifiableMap(mappings);
+	}
+
+	private CacheConfigurations() {
+	}
+	
+	// 获取缓存类型对应缓存配置类
+	static String getConfigurationClass(CacheType cacheType) {
+		Class<?> configurationClass = MAPPINGS.get(cacheType);
+		Assert.state(configurationClass != null, () -> "Unknown cache type " + cacheType);
+		return configurationClass.getName();
+	}
+
+    // 获取缓存配置类对应缓存类型
+	static CacheType getType(String configurationClassName) {
+		for (Map.Entry<CacheType, Class<?>> entry : MAPPINGS.entrySet()) {
+			if (entry.getValue().getName().equals(configurationClassName)) {
+				return entry.getKey();
+			}
+		}
+		throw new IllegalStateException("Unknown configuration class " + configurationClassName);
+	}
+
+}
+```
+
+通过`CacheConfigurations#getConfigurationClass`将获取一系列`CacheConfiguration`配置类，一般没有特殊配置时，将使用`SimpleCacheConfiguration`
+
+
+
+
+
+##### SimpleCacheConfiguration
+
+```java
+// org.springframework.boot.autoconfigure.cache.SimpleCacheConfiguration
+@Configuration(proxyBeanMethods = false)
+@ConditionalOnMissingBean(CacheManager.class)
+@Conditional(CacheCondition.class)
+class SimpleCacheConfiguration {
+
+	@Bean
+	ConcurrentMapCacheManager cacheManager(CacheProperties cacheProperties,
+			CacheManagerCustomizers cacheManagerCustomizers) {
+		ConcurrentMapCacheManager cacheManager = new ConcurrentMapCacheManager();
+		List<String> cacheNames = cacheProperties.getCacheNames();
+		if (!cacheNames.isEmpty()) {
+			cacheManager.setCacheNames(cacheNames);
+		}
+		return cacheManagerCustomizers.customize(cacheManager);
+	}
+
+}
+```
+
+为何使用`SimpleCacheConfiguration`配置类，因为其只需要IOC容器中没有`CacheManager`类型`bean`即可
+
+`SimpleCacheConfiguration`中通过`cacheManager`方法向IOC容器中注册的是`ConcurrentMapCacheManager`
+
+
+
+##### ConcurrentMapCacheManager
+
+```java
+// org.springframework.cache.concurrent.ConcurrentMapCacheManager
+public class ConcurrentMapCacheManager implements CacheManager, BeanClassLoaderAware {
+    // 通过ConcurrentMap存储Cache实例，key值为name命名空间
+    private final ConcurrentMap<String, Cache> cacheMap = new ConcurrentHashMap<>(16);
+
+    // 设置命名空间
+    public void setCacheNames(@Nullable Collection<String> cacheNames) {
+        if (cacheNames != null) {
+            for (String name : cacheNames) {
+                // 将通过createConcurrentMapCache创建Cache实例
+                this.cacheMap.put(name, createConcurrentMapCache(name));
+            }
+            this.dynamic = false;
+        }
+        else {
+            this.dynamic = true;
+        }
+    }
+	
+    // 根据命名空间，创建Cache实例
+    protected Cache createConcurrentMapCache(String name) {
+        SerializationDelegate actualSerialization = (isStoreByValue() ? this.serialization : null);
+        // 创建ConcurrentMapCache类型实例
+        return new ConcurrentMapCache(name, new ConcurrentHashMap<>(256), isAllowNullValues(), actualSerialization);
+    }
+}
+```
+
+可知`ConcurrentMapCacheManager`管理的`Cache`实例为`ConcurrentMapCache`类型
+
+
+
+##### ConcurrentMapCache
+
+```java
+public class ConcurrentMapCache extends AbstractValueAdaptingCache {
+	private final String name;
+    private final ConcurrentMap<Object, Object> store;
+}
+```
+
+`ConcurrentMapCache`内部通过`ConcurrentMap`管理缓存数据
+
+
+
+#### 4.2 如何从IOC容器中获取CacheManager
+
+在前面分析中，我们通过`CacheInterceptor`作为`Advisor`进行缓存的代理处理，关注`CacheInterceptor`类的继承层级，我们发现其实现了`SmartInitializingSingleton`接口
+
+
+
+##### SmartInitializingSingleton
+
+```java
+public interface SmartInitializingSingleton {
+	void afterSingletonsInstantiated();
+}
+```
+
+`SmartInitializingSingleton`是一个接口，主要用于Spring容器刷新时，所有单例`bean`实例化后的回调动作
+
+那么它如何进行工作呢？
+
+
+
+在Spring 生命周期中，我们通过`DefaultListableBeanFactory#preInstantiateSingletons`进行单例`bean`的实例化工作，实际在所有`bean`实例化后，还有一个动作
+
+```java
+// org.springframework.beans.factory.support.DefaultListableBeanFactory#preInstantiateSingletons
+public void preInstantiateSingletons() throws BeansException {
+
+    // 单例bean实例化，省略...
+
+    for (String beanName : beanNames) {
+        Object singletonInstance = getSingleton(beanName);
+        if (singletonInstance instanceof SmartInitializingSingleton) {
+            final SmartInitializingSingleton smartSingleton = (SmartInitializingSingleton) singletonInstance;
+			// 调用SmartInitializingSingleton#afterSingletonsInstantiated进行实例化后的回调
+            smartSingleton.afterSingletonsInstantiated();
+        }
+    }
+}
+```
+
+
+
+由于`CacheInterceptor`实现了`SmartInitializingSingleton`接口，所以我们分析其`afterSingletonsInstantiated`方法，它在其父类`CacheAspectSupport`中
+
+
+
+##### afterSingletonsInstantiated
+
+```java
+// org.springframework.cache.interceptor.CacheAspectSupport
+public abstract class CacheAspectSupport extends AbstractCacheInvoker
+    implements BeanFactoryAware, InitializingBean, SmartInitializingSingleton {
+
+    private SingletonSupplier<CacheResolver> cacheResolver;
+
+
+    public void afterSingletonsInstantiated() {
+        if (getCacheResolver() == null) {
+            // 从IOC容器中获取CacheManager实例
+            setCacheManager(this.beanFactory.getBean(CacheManager.class));
+        }
+        this.initialized = true;
+    }
+
+    public void setCacheManager(CacheManager cacheManager) {
+        this.cacheResolver = SingletonSupplier.of(new SimpleCacheResolver(cacheManager));
+    }
+}
+```
+
+`afterSingletonsInstantiated`方法中主要是从IOC容器中获取`CacheManager`实例，并且封装到`SingletonSupplier`中
+
+
+
+#### 小结
+
+
+
+我们可知，是通过`CacheAutoConfiguration`自动配置类导入的`CacheConfigurationImportSelector`类，向IOC容器中导入了多个`CacheConfiguration`缓存配置类，这些缓存配置类中通过`@Bean`注解注释的`cacheManager`方法向IOC容器中注册`CacheManager`实例
+
+之后在`CacheInterceptor`实例化后，调用实现自`SmartInitializingSingleton`接口的`afterSingletonsInstantiated`方法，从IOC容器中获取`CacheManager`实例，供`CacheInterceptor`使用
+
+
+
+### Redis缓存使用
+
+前面可知，使用通用`SimpleCacheConfiguration`配置类引入的`ConcurrentMapCacheManager`缓存管理器，其实际是通过内存中的`ConcurrentMap`集合实现数据的缓存，这将占用大量内存资源，所以我们通常考虑使用其他介质进行数据缓存，`Redis`就是一个不错的缓存容器
+
+那么我们如何使用`Redis`缓存替代`ConcurrentMapCacheManager`管理的内存缓存呢？
+
+
+
+在`SimpleCacheConfiguration`配置类上，存在这样一个注解`@ConditionalOnMissingBean(CacheManager.class)`，所以我们只要向容器中注册一个管理`Redis`的`CacheManager`实例，就可以替代`ConcurrentMapCacheManager`
+
+
+
+在`CacheConfigurations#getConfigurationClass`引入的`CacheConfiguration`配置类中，存在一个关于`Redis`的配置类，它就是`RedisCacheConfiguration`
+
+
+
+#### RedisCacheConfiguration
+
+```java
+// org.springframework.boot.autoconfigure.cache.RedisCacheConfiguration
+@Configuration(proxyBeanMethods = false)
+@ConditionalOnClass(RedisConnectionFactory.class)
+@AutoConfigureAfter(RedisAutoConfiguration.class)
+@ConditionalOnBean(RedisConnectionFactory.class)
+@ConditionalOnMissingBean(CacheManager.class)
+@Conditional(CacheCondition.class)
+class RedisCacheConfiguration {
+
+    @Bean
+    RedisCacheManager cacheManager(CacheProperties cacheProperties, CacheManagerCustomizers cacheManagerCustomizers,
+                                   ObjectProvider<org.springframework.data.redis.cache.RedisCacheConfiguration> redisCacheConfiguration,
+                                   ObjectProvider<RedisCacheManagerBuilderCustomizer> redisCacheManagerBuilderCustomizers,
+                                   RedisConnectionFactory redisConnectionFactory, ResourceLoader resourceLoader) {
+        RedisCacheManagerBuilder builder = RedisCacheManager.builder(redisConnectionFactory).cacheDefaults(
+            determineConfiguration(cacheProperties, redisCacheConfiguration, resourceLoader.getClassLoader()));
+        List<String> cacheNames = cacheProperties.getCacheNames();
+        if (!cacheNames.isEmpty()) {
+            builder.initialCacheNames(new LinkedHashSet<>(cacheNames));
+        }
+        redisCacheManagerBuilderCustomizers.orderedStream().forEach((customizer) -> customizer.customize(builder));
+        return cacheManagerCustomizers.customize(builder.build());
+    }
+
+    private org.springframework.data.redis.cache.RedisCacheConfiguration determineConfiguration(
+        CacheProperties cacheProperties,
+        ObjectProvider<org.springframework.data.redis.cache.RedisCacheConfiguration> redisCacheConfiguration,
+        ClassLoader classLoader) {
+        return redisCacheConfiguration.getIfAvailable(() -> createConfiguration(cacheProperties, classLoader));
+    }
+
+    private org.springframework.data.redis.cache.RedisCacheConfiguration createConfiguration(
+        CacheProperties cacheProperties, ClassLoader classLoader) {
+        Redis redisProperties = cacheProperties.getRedis();
+        org.springframework.data.redis.cache.RedisCacheConfiguration config = org.springframework.data.redis.cache.RedisCacheConfiguration
+            .defaultCacheConfig();
+        config = config.serializeValuesWith(
+            SerializationPair.fromSerializer(new JdkSerializationRedisSerializer(classLoader)));
+        if (redisProperties.getTimeToLive() != null) {
+            config = config.entryTtl(redisProperties.getTimeToLive());
+        }
+        if (redisProperties.getKeyPrefix() != null) {
+            config = config.prefixKeysWith(redisProperties.getKeyPrefix());
+        }
+        if (!redisProperties.isCacheNullValues()) {
+            config = config.disableCachingNullValues();
+        }
+        if (!redisProperties.isUseKeyPrefix()) {
+            config = config.disableKeyPrefix();
+        }
+        return config;
+    }
+
+}
+```
+
+通过带有`@Bean`注解的`RedisCacheConfiguration#cacheManager`方法，我们可以向IOC容器中注册一个`RedisCacheManager`，
+
+
+
+
+
+#### RedisCacheManager
+
+```java
+// org.springframework.data.redis.cache.RedisCacheManager
+public class RedisCacheManager extends AbstractTransactionSupportingCacheManager {
+    
+    // 创建RedisCache缓存容器
+    protected RedisCache createRedisCache(String name, @Nullable RedisCacheConfiguration cacheConfig) {
+        return new RedisCache(name, this.cacheWriter, cacheConfig != null ? cacheConfig : this.defaultCacheConfig);
+    }
+}
+```
+
+
+
+#### RedisCache
+
+`RedisCacheManager`中使用`RedisCache`作为缓存容器
+
+```java
+// org.springframework.data.redis.cache.RedisCache
+public class RedisCache extends AbstractValueAdaptingCache {
+    private final String name;
+    private final RedisCacheWriter cacheWriter;
+    private final RedisCacheConfiguration cacheConfig;
+
+    // 获取缓存数据
+    public synchronized <T> T get(Object key, Callable<T> valueLoader) {
+        ValueWrapper result = this.get(key);
+        if (result != null) {
+            return result.get();
+        } else {
+            T value = valueFromLoader(key, valueLoader);
+            this.put(key, value);
+            return value;
+        }
+    }
+
+    // 数据缓存
+    public void put(Object key, @Nullable Object value) {
+        Object cacheValue = this.preProcessCacheValue(value);
+
+        this.cacheWriter.put(this.name, this.createAndConvertCacheKey(key), this.serializeCacheValue(cacheValue), this.cacheConfig.getTtl());
+    }
+}
+```
+
+
+
+默认的`RedisCacheManager`使用了`JdkSerializationRedisSerializer`序列化方式，不利于使用，所以我们可以自己向IOC容器中注册一个`RedisCacheManager`，实现自己想要的序列化机制
+
+#### 自定义RedisCacheManager
+
+```java
+@Bean
+public RedisCacheManager cacheManager(RedisConnectionFactory
+                                      redisConnectionFactory) {
+    // 分别创建String和JSON格式序列化对象，对缓存数据key和value进行转换
+    // key使用StringRedisSerializer序列化
+    // value使用Jackson2JsonRedisSerializer序列化
+    RedisSerializer<String> strSerializer = new StringRedisSerializer();
+    Jackson2JsonRedisSerializer jacksonSeial =
+        new Jackson2JsonRedisSerializer(Object.class);
+    
+    // 解决查询缓存转换异常的问题
+    ObjectMapper om = new ObjectMapper();
+    om.setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY);
+    om.enableDefaultTyping(ObjectMapper.DefaultTyping.NON_FINAL);
+    jacksonSeial.setObjectMapper(om);
+    
+    // 定制缓存数据序列化方式及时效
+    RedisCacheConfiguration config =
+        RedisCacheConfiguration.defaultCacheConfig()
+        .entryTtl(Duration.ofDays(1))
+        .serializeKeysWith(RedisSerializationContext.SerializationPair
+                           .fromSerializer(strSerializer))
+        .serializeValuesWith(RedisSerializationContext.SerializationPair
+                             .fromSerializer(jacksonSeial))
+        .disableCachingNullValues();
+    RedisCacheManager cacheManager = RedisCacheManager
+        .builder(redisConnectionFactory).cacheDefaults(config).build();
+    return cacheManager;
+}
+```
+
+
 

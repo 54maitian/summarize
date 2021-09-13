@@ -412,6 +412,10 @@ private void processBeanDefinitions(Set<BeanDefinitionHolder> beanDefinitions) {
         }
 
 		// 省略...
+        
+        if (!explicitFactoryUsed) {
+            definition.setAutowireMode(AbstractBeanDefinition.AUTOWIRE_BY_TYPE);
+        }
     }
 }
 ```
@@ -420,7 +424,17 @@ private void processBeanDefinitions(Set<BeanDefinitionHolder> beanDefinitions) {
 
 
 
+##### **注意**
+
+对于判断标志`explicitFactoryUsed`，如果上述都符不符合，即没有配置对应`sqlSessionFactory、sqlSessionTemplate`信息时，有一个特殊处理：
+
+将`BeanDefinition`的`autowiredMode`设置为`AUTOWIRE_BY_TYPE`，由`Spring`分析可知，此时将进行根据类型的自动注入
+
+
+
 ### 小结
+
+`ClassPathMapperScanner`是`Mybatis`与`Spring`整合的关键扫描类
 
 综合分析`MapperScannerConfigurer#postProcessBeanDefinitionRegistry`具体调用，其主要实现两件事
 

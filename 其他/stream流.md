@@ -192,7 +192,11 @@ List<String[]> collect = stream.map(item -> item.split(",")).collect(Collectors.
 所以此时flatMap就起作用了：
 String[] arr = {"a,b,c", "e,f,g"};
 Stream<String> stream = Arrays.stream(arr);
-List<String> collect1 = stream.map(item -> item.split(",")).flatMap(Arrays::stream).collect(Collectors.toList());    
+List<String> collect1 = stream.map(item -> item.split(",")).flatMap(Arrays::stream).collect(Collectors.toList());   
+
+flatMap常用参数
+    Arrays::stream
+    Collections::stream
 ```
 
 而`flatMap`变种有：
