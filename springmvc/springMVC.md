@@ -1733,6 +1733,8 @@ public void handleReturnValue(@Nullable Object returnValue, MethodParameter retu
 
 writeWithMessageConverters的实质其实是调用 MappingJackson2XmlHttpMessageConverter#write进行响应输出
 最终通过objectMapper将响应对象转换为json字符串后，添加到response对象中
+    
+注意：对于复杂对象，只会将存在Getter方法的属性进行JSON转换保存
 ```
 
 # SpringMVC 执行过程

@@ -463,6 +463,8 @@ protected Set<String> getExclusions(AnnotationMetadata metadata, AnnotationAttri
     return excluded;
 }
 
+private static final String PROPERTY_NAME_AUTOCONFIGURE_EXCLUDE = "spring.autoconfigure.exclude";
+
 private List<String> getExcludeAutoConfigurationsProperty() {
     if (getEnvironment() instanceof ConfigurableEnvironment) {
         Binder binder = Binder.get(getEnvironment());
@@ -729,31 +731,36 @@ static class Registrar implements ImportBeanDefinitionRegistrar, DeterminableImp
 下面继续分析`register`方法
 
 ```java
-public static void register(BeanDefinitionRegistry registry, String... packageNames) {
-    // 判断IOC容器中是否已存在AutoConfigurationPackages.class为key的对象
-    if (registry.containsBeanDefinition(BEAN)) {
-        BeanDefinition beanDefinition = registry.getBeanDefinition(BEAN);
-        ConstructorArgumentValues constructorArguments = beanDefinition.getConstructorArgumentValues();
-        constructorArguments.addIndexedArgumentValue(0, addBasePackages(constructorArguments, packageNames));
-    }
-    else {
-        // 创建一个BeanDefinition
-        GenericBeanDefinition beanDefinition = new GenericBeanDefinition();
-        // 设置其beanClass为org.springframework.boot.autoconfigure.AutoConfigurationPackages.BasePackages
-        beanDefinition.setBeanClass(BasePackages.class);
-        beanDefinition.getConstructorArgumentValues().addIndexedArgumentValue(0, packageNames);
-        beanDefinition.setRole(BeanDefinition.ROLE_INFRASTRUCTURE);
-        // 已AutoConfigurationPackages.class为key，将BeanDefinition注册到IOC容器
-        registry.registerBeanDefinition(BEAN, beanDefinition);
-    }
-}
+// org.springframework.boot.autoconfigure.AutoConfigurationPackages
+public abstract class AutoConfigurationPackages {
+    private static final String BEAN = AutoConfigurationPackages.class.getName();
 
-private static String[] addBasePackages(ConstructorArgumentValues constructorArguments, String[] packageNames) {
-    String[] existing = (String[]) constructorArguments.getIndexedArgumentValue(0, String[].class).getValue();
-    Set<String> merged = new LinkedHashSet<>();
-    merged.addAll(Arrays.asList(existing));
-    merged.addAll(Arrays.asList(packageNames));
-    return StringUtils.toStringArray(merged);
+    public static void register(BeanDefinitionRegistry registry, String... packageNames) {
+        // 判断IOC容器中是否已存在AutoConfigurationPackages.class为key的对象
+        if (registry.containsBeanDefinition(BEAN)) {
+            BeanDefinition beanDefinition = registry.getBeanDefinition(BEAN);
+            ConstructorArgumentValues constructorArguments = beanDefinition.getConstructorArgumentValues();
+            constructorArguments.addIndexedArgumentValue(0, addBasePackages(constructorArguments, packageNames));
+        }
+        else {
+            // 创建一个BeanDefinition
+            GenericBeanDefinition beanDefinition = new GenericBeanDefinition();
+            // 设置其beanClass为org.springframework.boot.autoconfigure.AutoConfigurationPackages.BasePackages
+            beanDefinition.setBeanClass(BasePackages.class);
+            beanDefinition.getConstructorArgumentValues().addIndexedArgumentValue(0, packageNames);
+            beanDefinition.setRole(BeanDefinition.ROLE_INFRASTRUCTURE);
+            // 已AutoConfigurationPackages.class为key，将BeanDefinition注册到IOC容器
+            registry.registerBeanDefinition(BEAN, beanDefinition);
+        }
+    }
+
+    private static String[] addBasePackages(ConstructorArgumentValues constructorArguments, String[] packageNames) {
+        String[] existing = (String[]) constructorArguments.getIndexedArgumentValue(0, String[].class).getValue();
+        Set<String> merged = new LinkedHashSet<>();
+        merged.addAll(Arrays.asList(existing));
+        merged.addAll(Arrays.asList(packageNames));
+        return StringUtils.toStringArray(merged);
+    }
 }
 ```
 
@@ -762,6 +769,7 @@ private static String[] addBasePackages(ConstructorArgumentValues constructorArg
 由上述代码可知，`register`方法主要就是向IOC容器中注册`org.springframework.boot.autoconfigure.AutoConfigurationPackages.BasePackages`类型的`BeanDefinition`，并且将主配置类所在包设置到其属性中，那么我们应该分析一下`BasePackages`这个内部类
 
 ```java
+// org.springframework.boot.autoconfigure.AutoConfigurationPackages.BasePackages
 static final class BasePackages {
     // 保存基础包
     private final List<String> packages;
@@ -1264,7 +1272,7 @@ void environmentPrepared(ConfigurableEnvironment environment) {
 }
 ```
 
-可以发现，前面通过`org.springframework.boot.context.event.EventPublishingRunListener`发布消息供`ApplicationListener`处理
+可以发现，通过前面获取的`org.springframework.boot.context.event.EventPublishingRunListener`发布消息供`ApplicationListener`处理
 
 
 
